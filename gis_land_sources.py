@@ -435,10 +435,164 @@ def fetch_williamson_vacant_land_leads(market, limit=12):
     return leads
 
 
+def _fetch_bis_cad_vacant_land_leads(market, service_url, max_acres, limit, city_aliases=None):
+    """Shared loader for any county on BIS Consulting's CAD web-service schema
+    (file_as_name/legal_acreage/land_val/imprv_val/situs_*/addr_line*) --
+    Medina and Atascosa Counties' CADs are both hosted on this exact vendor,
+    byte-identical field names, confirmed live 2026-06-24.
+
+    No explicit land-use/state-class code field exists on this schema at all
+    -- vacant land is inferred the same way Williamson's was: imprv_val<=0
+    AND land_val>0 (no improvement value). No sale-price field either (only
+    Deed_Date, never paired with a price) -- sale history always comes back
+    "unknown", same treatment as Travis's TCAD layer.
+
+    situs_zip is unreliable on this schema -- confirmed live malformed values
+    ("778059", "7/8065", "X", plain nulls) on both counties' real data -- so
+    leads are scoped and zip-assigned by situs_city instead, matched against
+    market.zips' city list (case-insensitive). city_aliases covers any town
+    whose CAD-recorded spelling differs from its market.zips display name
+    (e.g. Medina CAD spells the town normally written "Lacoste" as "LA COSTE").
+
+    Government/school-district-owned parcels ('CITY OF ...'/'... ISD', in
+    either word order, confirmed live on both counties -- e.g. both "CITY OF
+    CASTROVILLE" and "HONDO CITY OF") and 'MULTIPLE OWNERS' rows (no single
+    contactable owner, and every mailing-address field blank on those rows,
+    confirmed live) are excluded. A handful of parcels share one geo_id with
+    multiple polygon features (confirmed live on Atascosa) -- deduped here.
+    """
+    aliases = city_aliases or {}
+    cad_city_to_real_city = {aliases.get(c.upper(), c.upper()): c for _z, c, _a in market.zips}
+    city_to_zip = {c.upper(): z for z, c, _a in market.zips}
+
+    where = (
+        f"imprv_val<=0 AND land_val>0 AND legal_acreage<={max_acres} "
+        f"AND NOT (UPPER(file_as_name) LIKE '%CITY OF%' OR UPPER(file_as_name) LIKE '%COUNTY OF%' "
+        f"OR UPPER(file_as_name) LIKE '%ISD%') "
+        f"AND situs_city IN ({','.join(repr(c) for c in sorted(cad_city_to_real_city))})"
+    )
+    params = {
+        "where": where,
+        "outFields": (
+            "geo_id,file_as_name,addr_line1,addr_line2,addr_line3,addr_city,addr_state,zip,"
+            "situs_num,situs_street,situs_street_sufix,situs_city,legal_acreage,land_val,"
+            "imprv_val,market,Deed_Date"
+        ),
+        "resultRecordCount": limit,
+        "returnGeometry": "false",
+        "f": "json",
+    }
+    url = f"{service_url}?{urllib.parse.urlencode(params)}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"BIS CAD query failed ({service_url}): {e}")
+    if "error" in data:
+        raise RuntimeError(f"BIS CAD query failed ({service_url}): {data['error']}")
+
+    leads = []
+    seen_geo_ids = set()
+    for feature in data.get("features", []):
+        attrs = feature["attributes"]
+        geo_id = (attrs.get("geo_id") or "").strip()
+        if geo_id and geo_id in seen_geo_ids:
+            continue
+
+        owner_name = (attrs.get("file_as_name") or "").strip()
+        if not owner_name or owner_name.upper() == "MULTIPLE OWNERS":
+            continue
+
+        situs_street = (attrs.get("situs_street") or "").strip()
+        situs_sufix = (attrs.get("situs_street_sufix") or "").strip()
+        # situs_street already includes the suffix on some rows (confirmed
+        # live, e.g. "CANNON RD" with situs_street_sufix also "RD") -- don't
+        # double it up.
+        if situs_sufix and situs_street.upper().endswith(situs_sufix.upper()):
+            situs_sufix = ""
+        situs_parts = [attrs.get("situs_num"), situs_street, situs_sufix]
+        situs = " ".join(p.strip() for p in situs_parts if p and p.strip())
+        cad_city = (attrs.get("situs_city") or "").strip().upper()
+        city = cad_city_to_real_city.get(cad_city)
+        zip_code = city_to_zip.get(city.upper()) if city else None
+        acreage = attrs.get("legal_acreage") or 0.0
+        if not situs or not city or not zip_code or acreage <= 0:
+            continue
+
+        addr_lines = [attrs.get("addr_line1"), attrs.get("addr_line2"), attrs.get("addr_line3")]
+        owner_street = ", ".join(p.strip() for p in addr_lines if p and p.strip())
+        owner_mailing_address = (
+            f"{owner_street}, {(attrs.get('addr_city') or '').strip()}, "
+            f"{(attrs.get('addr_state') or '').strip()} {(attrs.get('zip') or '').strip()}"
+        )
+        owner_occupied = bool(owner_street) and situs.split()[0] in owner_street
+
+        land_val = attrs.get("land_val") or 0.0
+        market_val = attrs.get("market") or land_val
+
+        if geo_id:
+            seen_geo_ids.add(geo_id)
+        leads.append(LandLead(
+            apn=geo_id,
+            owner_name=owner_name,
+            owner_mailing_address=owner_mailing_address,
+            property_address=f"{situs}, {city}",
+            city=city,
+            state=market.state,
+            zip=zip_code,
+            county=market.county,
+            land_use="Vacant Land",
+            acreage=acreage,
+            assessed_value=land_val,
+            estimated_value=market_val,
+            last_sale_price=None,    # unknown -- this schema has Deed_Date but no price field
+            last_sale_date="unknown",
+            years_owned=None,
+            owner_occupied=owner_occupied,
+            tax_delinquent=False,    # unknown -- no delinquency field on this schema
+        ))
+        if len(leads) >= limit:
+            break
+    return leads
+
+
+MEDINA_PARCELS_URL = (
+    "https://services6.arcgis.com/j94FvPaik4etwHFk/arcgis/rest/services/MedinaCADWebService/FeatureServer/0/query"
+)
+MEDINA_MAX_ACRES = 20.0
+# Medina CAD's situs_city spells the town normally written "Lacoste" with a
+# space -- confirmed live 2026-06-24.
+MEDINA_CITY_ALIASES = {"LACOSTE": "LA COSTE"}
+
+
+def fetch_medina_vacant_land_leads(market, limit=12):
+    """Live query against Medina CAD's parcel data (Natalia/Devine/Hondo/
+    Castroville/Lacoste). See markets.py's MEDINA_TX.land_source and
+    _fetch_bis_cad_vacant_land_leads's docstring for the full detail."""
+    return _fetch_bis_cad_vacant_land_leads(
+        market, MEDINA_PARCELS_URL, MEDINA_MAX_ACRES, limit, city_aliases=MEDINA_CITY_ALIASES,
+    )
+
+
+ATASCOSA_PARCELS_URL = (
+    "https://services8.arcgis.com/q1dyPay4QViMab9g/arcgis/rest/services/AtascosaCADWebService/FeatureServer/0/query"
+)
+ATASCOSA_MAX_ACRES = 20.0
+
+
+def fetch_atascosa_vacant_land_leads(market, limit=12):
+    """Live query against Atascosa CAD's parcel data (Poteet/Jourdanton/
+    Pleasanton). See markets.py's ATASCOSA_TX.land_source and
+    _fetch_bis_cad_vacant_land_leads's docstring for the full detail."""
+    return _fetch_bis_cad_vacant_land_leads(market, ATASCOSA_PARCELS_URL, ATASCOSA_MAX_ACRES, limit)
+
+
 # Keyed by Market.key -- run.py checks this before falling back to mock.
 LIVE_LAND_LOADERS = {
     "BEXAR_TX": fetch_bexar_vacant_land_leads,
     "TRAVIS_TX": fetch_travis_vacant_land_leads,
     "GWINNETT_GA": fetch_gwinnett_vacant_land_leads,
     "WILLIAMSON_TN": fetch_williamson_vacant_land_leads,
+    "MEDINA_TX": fetch_medina_vacant_land_leads,
+    "ATASCOSA_TX": fetch_atascosa_vacant_land_leads,
 }

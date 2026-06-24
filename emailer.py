@@ -79,7 +79,44 @@ def _format_date(run_label):
         return run_label or ""
 
 
+def _property_card_html(deal):
+    """Bare-facts card for skip_builder_matching markets (Medina/Atascosa
+    Counties TX, added 2026-06-24) -- the user already has a direct buyer
+    there, so there's no pitch or contract draft, just the property facts.
+    Deliberately mirrors _deal_card_html's h2-title + row-table styling for
+    visual consistency with the rest of the digest (no badges/buyer-box/
+    pitch/contract sections, since none of that applies here). lead.
+    property_address doesn't include state/zip on its own (matches every
+    other market's convention) -- appended here so the address is complete
+    enough to hand straight to a buyer."""
+    lead = deal["land_lead"]
+    enrichment_data = deal["enrichment"]
+    full_address = f"{lead.property_address}, {lead.state} {lead.zip}"
+    rows = [
+        ("Acreage", f"{lead.acreage:g} acres"),
+        ("Zoning", enrichment_data["zoning"]),
+        ("Flood Zone", f"{enrichment_data['flood_zone']} ({enrichment_data['flood_risk']} risk)"),
+        ("Wetlands", "Present" if enrichment_data["wetlands_present"] else "Not present"),
+        ("Assessed Value", f"${lead.assessed_value:,.0f}"),
+        ("Owner", lead.owner_name),
+    ]
+    rows_html = "".join(
+        f'<tr style="background:{"#f9fafb" if i % 2 == 0 else "#ffffff"};">'
+        f'<td style="padding:7px 12px; font-weight:600; width:170px; font-size:13px;">{label}</td>'
+        f'<td style="padding:7px 12px; font-size:13px;">{value}</td></tr>'
+        for i, (label, value) in enumerate(rows)
+    )
+    return f"""
+    <div style="border:1px solid #e5e7eb; border-radius:10px; padding:20px; margin-bottom:24px; background:#ffffff;">
+      <h2 style="margin:0 0 10px 0; font-size:19px; color:#111827;">{full_address}</h2>
+      <table style="border-collapse:collapse; width:100%;">{rows_html}</table>
+    </div>
+    """
+
+
 def _deal_card_html(deal):
+    if "builder" not in deal:
+        return _property_card_html(deal)
     lead = deal["land_lead"]
     enrichment_data = deal["enrichment"]
     builder = deal["builder"]
@@ -133,13 +170,17 @@ def _deal_card_html(deal):
 
 def _market_section_html(market, deals, unmatched_count):
     cards_html = "\n".join(_deal_card_html(d) for d in deals) if deals else (
-        '<p style="color:#6b7280; font-size:13px;">No matched deals this run.</p>'
+        '<p style="color:#6b7280; font-size:13px;">No leads this run.</p>'
+    )
+    badge_text = (
+        f"{len(deals)} lead(s)" if market.skip_builder_matching
+        else f"{len(deals)} deal(s) &middot; {unmatched_count} unmatched"
     )
     return f"""
     <div style="margin-top:32px;">
       <div style="background:#111827; color:#ffffff; padding:12px 18px; border-radius:8px 8px 0 0;">
         <span style="font-size:16px; font-weight:700;">&#128205; {market.label}</span>
-        <span style="float:right; font-size:12px; background:#374151; padding:4px 10px; border-radius:10px;">{len(deals)} deal(s) &middot; {unmatched_count} unmatched</span>
+        <span style="float:right; font-size:12px; background:#374151; padding:4px 10px; border-radius:10px;">{badge_text}</span>
       </div>
       <div style="border:1px solid #e5e7eb; border-top:none; border-radius:0 0 8px 8px; padding:18px; background:#f9fafb;">
         {cards_html}

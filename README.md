@@ -1,17 +1,29 @@
 # Land Scout -- AI-assisted vacant land wholesaling pipeline
 
-Runs four target markets every pass (see `markets.py`):
+Runs six target markets every pass (see `markets.py`):
 
 - **Austin, TX** (Travis County)
 - **San Antonio, TX** (Bexar County)
 - **Atlanta Suburbs, GA** (Gwinnett County)
 - **Nashville Suburbs, TN** (Williamson County) -- currently **skipped**, see below
+- **Medina County, TX** (Natalia area) -- real land leads only, see below
+- **Atascosa County, TX** (Poteet area) -- real land leads only, see below
 
 For each market it finds vacant land leads, enriches each with zoning/flood/
 wetland status, matches them to active local home builders (identified from
 public permit activity), drafts a buyer pitch and two draft contracts per
 match, and emails one combined digest -- sectioned by market -- to you to
 forward.
+
+**Medina and Atascosa Counties are different on purpose**
+(`Market.skip_builder_matching=True`): the user already has a direct buyer
+in each, so there's no permit/builder matching, pitch, or contract draft --
+every fresh land lead is just enriched and sent as its own bare-facts
+property card (address, acreage, zoning, flood zone, wetlands, assessed
+value, owner name) formatted to copy straight into a text to that buyer.
+This also bypasses the free-permit-source gate below -- there's no permit
+step to gate -- since neither county has a confirmed free permit source
+anyway (same dead end as Williamson, see `markets.py`).
 
 ## Current state: 3 of 4 active markets are fully real, end to end
 
@@ -77,6 +89,8 @@ exact field names and filter values) lives in each `Market` record's
 | San Antonio, TX | Bexar County GIS Parcels (ArcGIS REST) -- live | City of San Antonio Open Data SA "Building Permits" CSV (CKAN/S3-hosted) -- live |
 | Atlanta Suburbs, GA | Gwinnett County "Property and Tax Table" (ArcGIS Feature Service) -- live | Gwinnett County weekly "Building Permits Issued" PDF report, parsed with `pdfplumber` -- live but more fragile than the others |
 | Nashville Suburbs, TN | Williamson County GIS parcels table (ArcGIS, HTTP only) -- live, with a known zip/city placeholder gap | **Not confirmed as a free bulk export.** County only permits unincorporated land; growth is mostly inside incorporated cities that permit separately. Market is skipped until this changes. |
+| Medina County, TX | Medina CAD parcel data, hosted on ArcGIS Online by BIS Consulting -- live, owner+value+address | Not confirmed free (same dead end as Williamson) -- moot, `skip_builder_matching=True` |
+| Atascosa County, TX | Atascosa CAD parcel data, same vendor/schema as Medina -- live, owner+value+address | Not confirmed free (same dead end as Williamson) -- moot, `skip_builder_matching=True` |
 
 **Pattern that worked repeatedly when hunting for these:** a live ArcGIS
 REST/Feature Service with owner+value fields beats a bulk-download page or
@@ -160,6 +174,13 @@ Rolli project. Set `DIGEST_TO` to that address until a domain is verified.
   set `PERMITS_CSV_PATH_WILLIAMSON_TN` to override directly. Its land
   loader also has a known zip/city placeholder gap (no real zip field on
   that table) worth fixing first if this market is ever revived.
+- Medina and Atascosa Counties have the same "no confirmed free permit
+  source" gap as Williamson, but run anyway (`skip_builder_matching=True`)
+  because the user has a direct buyer in each and doesn't need permit-based
+  builder discovery there. If that ever changes, flip
+  `skip_builder_matching=False` and (once a real source exists)
+  `permit_source_is_free=True` to bring them into the normal matched-buyer
+  pitch/contract flow like the other markets.
 - Gwinnett's permit loader depends on a weekly PDF report whose URL slug
   isn't consistently formatted -- the loader discovers the latest report
   from the listing page rather than guessing a URL, but a real CMS/layout

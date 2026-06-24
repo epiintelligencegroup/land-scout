@@ -51,6 +51,15 @@ class Market:
     # no run.py gate on this one. See gis_land_sources.py for any that are
     # actually live-wired (currently just Bexar).
     land_source: str = ""
+    # True only for markets where the user already has a direct, known buyer
+    # and doesn't need permit-based builder discovery there at all (Medina/
+    # Atascosa, added 2026-06-24). run.py skips permit loading, builder
+    # aggregation, and lead-to-builder matching entirely for these -- every
+    # fresh land lead becomes a "deal" on its own -- and bypasses the
+    # free-permit-source gate below (there's no permit step to gate).
+    # emailer.py renders these as a bare-facts property card instead of the
+    # usual matched-buyer pitch+contract card.
+    skip_builder_matching: bool = False
 
 
 TRAVIS_TX = Market(
@@ -298,7 +307,119 @@ WILLIAMSON_TN = Market(
     ),
 )
 
-MARKETS = [TRAVIS_TX, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN]
+MEDINA_TX = Market(
+    key="MEDINA_TX",
+    label="Medina County, TX (Natalia Area)",
+    county="Medina",
+    state="TX",
+    # Added 2026-06-24: user has a direct, known buyer in this market already
+    # and asked for real land leads only -- see skip_builder_matching below.
+    zips=[
+        ("78059", "Natalia", "Natalia"),
+        ("78016", "Devine", "Devine"),
+        ("78039", "Lacoste", "Lacoste"),
+        ("78009", "Castroville", "Castroville"),
+        ("78861", "Hondo", "Hondo"),
+    ],
+    # Never used -- skip_builder_matching=True means mock permits/builders
+    # are never generated for this market either.
+    builder_names=[],
+    zoning_codes=["R-1", "R-2", "RR", "AG", "C-1"],
+    permit_source=(
+        "NOT CONFIRMED as a free bulk/API source, despite checking the county "
+        "itself and every incorporated city in it (Natalia, Devine, Hondo, "
+        "Castroville, LaCoste) -- every one is application-only (email/PDF/"
+        "in-person, e.g. Devine's iWORQ portal requires a permit number to "
+        "search, not browsable), no searchable issued-permit list, and an "
+        "ArcGIS Online search for a 'permits' feature service under any of "
+        "these town names found nothing. Same dead end as Williamson. Moot "
+        "for this market anyway -- skip_builder_matching=True because the "
+        "user already has a direct buyer here and doesn't need permit-based "
+        "buyer discovery."
+    ),
+    gis_source=(
+        "Medina CAD's own parcel data (medinacad.org, GIS mirror at "
+        "gis.bisconsultants.com/medinacad) -- same source as land_source "
+        "below. This vendor doesn't separate out a distinct zoning/flood "
+        "viewer; FEMA's National Flood Hazard Layer (msc.fema.gov) covers "
+        "flood risk for any TX county without its own viewer."
+    ),
+    permit_source_is_free=False,
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-24): Medina CAD's parcel data, hosted on "
+        "ArcGIS Online by BIS Consulting (services6.arcgis.com/"
+        "j94FvPaik4etwHFk/.../MedinaCADWebService/FeatureServer/0) -- free, "
+        "queryable, no login. No explicit land-use/state-class code field "
+        "exists on this schema at all (unlike Bexar/Travis/Gwinnett) -- "
+        "vacant land is inferred the same way Williamson's was: "
+        "imprv_val<=0 AND land_val>0. Has owner name (file_as_name)/mailing "
+        "address/situs address/land value/acreage/Deed_Date -- but no "
+        "sale-price field at all, so sale history is unconditionally "
+        "'unknown', same treatment as Travis. Government/school-district-"
+        "owned parcels ('CITY OF ...'/'... ISD') and 'MULTIPLE OWNERS' rows "
+        "(no single contactable owner) are confirmed live in this data and "
+        "explicitly excluded. situs_zip is unreliable on this schema "
+        "(confirmed live malformed values like '778059', '7/8065', 'X', and "
+        "plain nulls) -- leads are scoped and zip-assigned by situs_city "
+        "instead (matched against this Market's zips list; Medina CAD spells "
+        "Lacoste as 'LA COSTE', handled via an alias in gis_land_sources.py). "
+        "Acreage capped at 20 here (vs. the 2-acre infill ceiling used in the "
+        "four urban/suburban markets) -- rural lot sizes are naturally "
+        "bigger; this still excludes the largest ranch tracts."
+    ),
+    skip_builder_matching=True,
+)
+
+ATASCOSA_TX = Market(
+    key="ATASCOSA_TX",
+    label="Atascosa County, TX (Poteet Area)",
+    county="Atascosa",
+    state="TX",
+    # Added 2026-06-24, same reasoning as Medina above -- user has a direct,
+    # known buyer here too.
+    zips=[
+        ("78065", "Poteet", "Poteet"),
+        ("78026", "Jourdanton", "Jourdanton"),
+        ("78064", "Pleasanton", "Pleasanton"),
+    ],
+    builder_names=[],
+    zoning_codes=["R-1", "R-2", "RR", "AG", "C-1"],
+    permit_source=(
+        "NOT CONFIRMED as a free bulk/API source, despite checking the "
+        "county itself (Atascosa County Fire Marshal's office handles "
+        "permits for unincorporated land, application-only, voluntary for "
+        "residential) and every incorporated city in it (Poteet, "
+        "Jourdanton, Pleasanton) -- all application-only (email/PDF/in-"
+        "person), no searchable issued-permit list, and an ArcGIS Online "
+        "search for a 'permits' feature service under any of these town "
+        "names found nothing. Same dead end as Williamson/Medina. Moot for "
+        "this market anyway -- skip_builder_matching=True, user already has "
+        "a direct buyer here."
+    ),
+    gis_source=(
+        "Atascosa CAD's own parcel data (esearch.atascosacad.com, GIS "
+        "mirror at gis.bisconsultants.com) -- same source as land_source "
+        "below. No distinct zoning/flood viewer; FEMA's National Flood "
+        "Hazard Layer (msc.fema.gov) covers flood risk here."
+    ),
+    permit_source_is_free=False,
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-24): Atascosa CAD's parcel data, hosted "
+        "on ArcGIS Online by the same vendor as Medina CAD above "
+        "(services8.arcgis.com/q1dyPay4QViMab9g/.../AtascosaCADWebService/"
+        "FeatureServer/0), byte-identical schema -- free, queryable, no "
+        "login. Same vacant-land inference (imprv_val<=0 AND land_val>0), "
+        "same 'unknown' sale-history treatment (no sale-price field), same "
+        "'CITY OF .../... ISD'/'MULTIPLE OWNERS' exclusions, same "
+        "situs_zip-is-unreliable workaround (scoped/zip-assigned by "
+        "situs_city instead), and same 20-acre rural ceiling as Medina -- "
+        "see that Market's land_source for the full detail, all confirmed "
+        "live against this county's real data too."
+    ),
+    skip_builder_matching=True,
+)
+
+MARKETS = [TRAVIS_TX, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN, MEDINA_TX, ATASCOSA_TX]
 
 
 @dataclass

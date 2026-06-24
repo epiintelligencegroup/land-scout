@@ -14,6 +14,11 @@ _skip_reason() below. The point is to never quietly start relying on a paid
 permit feed without the user choosing that explicitly. Skipped markets are
 listed in both the console output and the digest email itself.
 
+Markets with Market.skip_builder_matching=True (the user already has a
+direct buyer there, e.g. Medina/Atascosa Counties TX) skip permits/builders/
+matching entirely and bypass the gate above -- every fresh land lead is sent
+as its own bare-facts deal, see run_market() below.
+
 Every land/permit fetch -- live or mock -- happens fresh on every run; there
 is no caching layer anywhere in this pipeline. Leads already included in a
 past successful send are filtered out before drafting a pitch (skipping the
@@ -62,7 +67,12 @@ def _skip_reason(market, permits_csv_path):
     The gate is permits specifically (the thing we're searching for a free source
     of) -- a market never runs on mock or real permit data unless permit_source_is_free
     is True, or the user has explicitly pointed PERMITS_CSV_PATH_<key> at a real
-    export (their own sourcing decision, not the code's to second-guess)."""
+    export (their own sourcing decision, not the code's to second-guess).
+
+    skip_builder_matching markets never load permits at all (see run_market),
+    so this gate doesn't apply to them -- there's no permit feed to vet."""
+    if market.skip_builder_matching:
+        return None
     if permits_csv_path or market.permit_source_is_free:
         return None
     return (
@@ -93,6 +103,18 @@ def run_market(market, today, closing_date, sent_keys):
     else:
         leads = generate_mock_land_leads(market, MOCK_LEAD_COUNT)
         print(f"[{label}] Generated {len(leads)} mock land leads (no LAND_CSV_PATH_{market.key} set)")
+
+    if market.skip_builder_matching:
+        # No permits, no builders, no matching -- the user already has a
+        # direct buyer here (see markets.py). Every fresh land lead becomes
+        # its own "deal"; emailer.py renders these as bare-facts property
+        # cards instead of the usual matched-buyer pitch+contract card.
+        fresh_leads = [lead for lead in leads if lead_key(market, lead) not in sent_keys]
+        already_sent_count = len(leads) - len(fresh_leads)
+        print(f"[{label}] {len(fresh_leads)} fresh land lead(s) -- no builder matching "
+              f"(you have a direct buyer here), {already_sent_count} already sent in a previous run")
+        deals = [{"land_lead": lead, "enrichment": enrich(lead)} for lead in fresh_leads]
+        return {"market": market, "deals": deals, "unmatched_count": 0}
 
     if permits_csv_path:
         permits = load_permits(permits_csv_path)
@@ -153,7 +175,15 @@ def main():
     market_results = [r for r in all_results if r is not None]
     skipped_markets = [m for m, r in zip(MARKETS, all_results) if r is None]
 
-    low_inventory_results = [r for r in market_results if len(r["deals"]) < LOW_INVENTORY_THRESHOLD]
+    # skip_builder_matching markets are excluded here -- the alert's premise
+    # (no active builder matches, go find a market with a free permit source)
+    # doesn't fit a market where there's no builder matching step at all and
+    # the user already has their own buyer; low daily volume there is just
+    # rural inventory, not a reason to suggest switching markets.
+    low_inventory_results = [
+        r for r in market_results
+        if not r["market"].skip_builder_matching and len(r["deals"]) < LOW_INVENTORY_THRESHOLD
+    ]
     for r in low_inventory_results:
         print(f"[{r['market'].label}] LOW INVENTORY -- {len(r['deals'])} matched deal(s), "
               f"below threshold of {LOW_INVENTORY_THRESHOLD}")
