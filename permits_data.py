@@ -31,6 +31,33 @@ PERMIT_FIELDS = [
 
 NEW_CONSTRUCTION_TYPES = ["New Single Family", "New Construction - Residential"]
 
+# Company-name keywords that reliably mean a single-trade subcontractor or
+# a non-builder business, not a homebuilder/developer -- added 2026-06-24
+# after a live San Antonio run matched "JUAN REYES CONCRETE WORK INC" (29
+# separate new-construction permits, easily clearing the min-permits bar)
+# as a buyer. None of the three live permit feeds has a separate trade/
+# license-type field to filter on instead -- PRIMARY CONTACT/contractor_
+# company_name/CONTRACTOR is the only "who pulled this permit" field that
+# exists -- so this is a deliberately narrow denylist: only terms that are
+# essentially never part of a real ground-up homebuilder's name. Generic
+# terms like "CONSTRUCTION"/"BUILDERS"/"DESIGN" are deliberately excluded
+# from this list even though some subcontractors use them too, because far
+# more real small/custom homebuilders use those same words (confirmed live
+# against Austin: "Eastside Construction Company LLC" and "Joseph Design
+# Build" are genuine spec-home builders that would be wrongly dropped).
+NON_BUILDER_KEYWORDS = (
+    "CONCRETE", "PLUMBING", "ELECTRIC", "ROOF", "HVAC", "POOL", "PAINT",
+    "DRYWALL", "MASONRY", "STUCCO", "LANDSCAP", "FENC", "IRRIGATION",
+    "EXCAVAT", "GRADING", "PAVING", "FRAMING", "INSULATION", "SEPTIC",
+    "DEMOLITION", "TRIM", "REALTY", "REAL ESTATE", "REMODEL",
+    "RESTORATION", "ARCHITECTURE",
+)
+
+
+def _is_subcontractor_or_non_builder(name):
+    upper = name.upper()
+    return any(keyword in upper for keyword in NON_BUILDER_KEYWORDS)
+
 
 @dataclass
 class Permit:
@@ -113,6 +140,8 @@ def generate_mock_permits(market, builder_count=10, seed=None):
 def aggregate_builders(permits, min_permits=MIN_PERMITS_FOR_BUYER_CANDIDATE):
     by_builder = defaultdict(list)
     for permit in permits:
+        if _is_subcontractor_or_non_builder(permit.contractor_name):
+            continue
         by_builder[permit.contractor_name].append(permit)
 
     candidates = []
