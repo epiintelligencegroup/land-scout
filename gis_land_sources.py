@@ -23,11 +23,37 @@ fallback stays in case a source ever goes dark.
 """
 import datetime
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from land_data import CURRENT_YEAR, LandLead
+
+# Owner-name patterns meaning a business/builder/trust/estate, not an
+# individual person -- added 2026-06-24 after live Medina/Atascosa leads
+# came back owned by PERRY HOMES, DAVID WEEKLEY HOMES, etc. (the original
+# seller already sold to a builder, so there's no raw land deal left to
+# wholesale there). Each pattern is wrapped in \b...\b (whole-word, not a
+# raw substring check) -- a plain "INC" substring match would wrongly
+# exclude a real surname like "PRINCE" or "INCERA", both confirmed present
+# in this data. A few patterns allow an optional suffix to catch a real,
+# confirmed-live word variant without widening the match into a prefix risk
+# -- e.g. \bINC(?:ORPORATED)?\b catches both "INC" and "INCORPORATED" while
+# still correctly rejecting "INCERA" (the trailing \b still has to hold).
+# User's original list was LLC/INC/CORP/HOMES/CONSTRUCTION/BUILDERS/REALTY/
+# TRUST/ESTATE; LP/LTD/HOLDINGS/CO added after by explicit request.
+NON_INDIVIDUAL_OWNER_PATTERNS = (
+    r"LLC", r"INC(?:ORPORATED)?", r"CORP(?:ORATION)?", r"HOMES", r"CONSTRUCTION",
+    r"BUILDERS?", r"REALTY", r"TRUST(?:EES?)?", r"ESTATES?", r"LP", r"LTD", r"HOLDINGS?", r"CO",
+)
+_NON_INDIVIDUAL_OWNER_RE = re.compile(
+    r"\b(?:" + "|".join(NON_INDIVIDUAL_OWNER_PATTERNS) + r")\b", re.IGNORECASE,
+)
+
+
+def _is_non_individual_owner(name):
+    return bool(_NON_INDIVIDUAL_OWNER_RE.search(name))
 
 BEXAR_PARCELS_URL = "https://maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0/query"
 
@@ -460,6 +486,15 @@ def _fetch_bis_cad_vacant_land_leads(market, service_url, max_acres, limit, city
     contactable owner, and every mailing-address field blank on those rows,
     confirmed live) are excluded. A handful of parcels share one geo_id with
     multiple polygon features (confirmed live on Atascosa) -- deduped here.
+
+    Owner names matching NON_INDIVIDUAL_OWNER_PATTERNS (LLC/INC/CORP/HOMES/
+    CONSTRUCTION/BUILDERS/REALTY/TRUST/ESTATE/LP/LTD/HOLDINGS/CO, plus a few
+    confirmed-live word variants like TRUSTEE(S)/CORPORATION/INCORPORATED)
+    are also excluded -- user wants individual-person-owned land only, not
+    parcels already owned by a builder/company (confirmed live: PERRY
+    HOMES, DAVID WEEKLEY HOMES, and plenty of plain LLCs show up as "vacant
+    land" owners in this data --
+    the land already sold to a builder, so there's no deal left there).
     """
     aliases = city_aliases or {}
     cad_city_to_real_city = {aliases.get(c.upper(), c.upper()): c for _z, c, _a in market.zips}
@@ -500,7 +535,7 @@ def _fetch_bis_cad_vacant_land_leads(market, service_url, max_acres, limit, city
             continue
 
         owner_name = (attrs.get("file_as_name") or "").strip()
-        if not owner_name or owner_name.upper() == "MULTIPLE OWNERS":
+        if not owner_name or owner_name.upper() == "MULTIPLE OWNERS" or _is_non_individual_owner(owner_name):
             continue
 
         situs_street = (attrs.get("situs_street") or "").strip()

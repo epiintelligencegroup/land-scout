@@ -365,7 +365,12 @@ MEDINA_TX = Market(
         "Lacoste as 'LA COSTE', handled via an alias in gis_land_sources.py). "
         "Acreage capped at 20 here (vs. the 2-acre infill ceiling used in the "
         "four urban/suburban markets) -- rural lot sizes are naturally "
-        "bigger; this still excludes the largest ranch tracts."
+        "bigger; this still excludes the largest ranch tracts. Owners "
+        "matching NON_INDIVIDUAL_OWNER_PATTERNS in gis_land_sources.py "
+        "(LLC/INC/CORP/HOMES/CONSTRUCTION/BUILDERS/REALTY/TRUST/ESTATE/LP/"
+        "LTD/HOLDINGS/CO, added 2026-06-24 after live leads here came back "
+        "owned by PERRY HOMES/DAVID WEEKLEY HOMES) are excluded too -- user "
+        "wants individual-person-owned land only."
     ),
     skip_builder_matching=True,
 )
@@ -411,7 +416,8 @@ ATASCOSA_TX = Market(
         "login. Same vacant-land inference (imprv_val<=0 AND land_val>0), "
         "same 'unknown' sale-history treatment (no sale-price field), same "
         "'CITY OF .../... ISD'/'MULTIPLE OWNERS' exclusions, same "
-        "situs_zip-is-unreliable workaround (scoped/zip-assigned by "
+        "NON_INDIVIDUAL_OWNER_PATTERNS exclusion (LLC/INC/CORP/HOMES/etc.), "
+        "same situs_zip-is-unreliable workaround (scoped/zip-assigned by "
         "situs_city instead), and same 20-acre rural ceiling as Medina -- "
         "see that Market's land_source for the full detail, all confirmed "
         "live against this county's real data too."
