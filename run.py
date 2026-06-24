@@ -14,6 +14,13 @@ _skip_reason() below. The point is to never quietly start relying on a paid
 permit feed without the user choosing that explicitly. Skipped markets are
 listed in both the console output and the digest email itself.
 
+Every land/permit fetch -- live or mock -- happens fresh on every run; there
+is no caching layer anywhere in this pipeline. Leads already included in a
+past successful send are filtered out before drafting a pitch (skipping the
+Anthropic call too) using sent_log.py's flat append-only log, so the same
+property is never sent twice; the log is only updated after a send actually
+succeeds.
+
 Setup:
     cp .env.example .env   # fill in ANTHROPIC_API_KEY, RESEND_API_KEY, DIGEST_TO
     python3 run.py
@@ -31,6 +38,7 @@ from markets import CANDIDATE_MARKETS, JACKSONVILLE_FL, MARKETS
 from matcher import match_leads_to_builders
 from permits_data import aggregate_builders, generate_mock_permits, load_permits
 from pitch import draft_pitch
+from sent_log import append_sent_keys, lead_key, load_sent_keys
 
 MOCK_LEAD_COUNT = int(os.environ.get("MOCK_LEAD_COUNT", "12"))
 WHOLESALER_NAME = os.environ.get("WHOLESALER_NAME", "Ahmaad Piper")
@@ -70,7 +78,7 @@ def _skip_reason(market, permits_csv_path):
     )
 
 
-def run_market(market, today, closing_date):
+def run_market(market, today, closing_date, sent_keys):
     label = market.label
     land_csv_path = _market_csv_path(market, "LAND")
     permits_csv_path = _market_csv_path(market, "PERMITS")
@@ -107,10 +115,13 @@ def run_market(market, today, closing_date):
     print(f"[{label}] {len(builders)} builder buyer-candidates after aggregation (min 2 permits)")
 
     matches, unmatched = match_leads_to_builders(leads, builders)
-    print(f"[{label}] {len(matches)} lead-builder matches, {len(unmatched)} leads unmatched")
+    fresh_matches = [m for m in matches if lead_key(market, m.land_lead) not in sent_keys]
+    already_sent_count = len(matches) - len(fresh_matches)
+    print(f"[{label}] {len(matches)} lead-builder matches, {len(unmatched)} leads unmatched, "
+          f"{already_sent_count} already sent in a previous run")
 
     deals = []
-    for match in matches:
+    for match in fresh_matches:
         lead = match.land_lead
         builder = match.builder
         enrichment_data = enrich(lead)
@@ -142,8 +153,10 @@ def run_market(market, today, closing_date):
 def main():
     today = datetime.date.today().isoformat()
     closing_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+    sent_keys = load_sent_keys()
+    print(f"{len(sent_keys)} properties already sent in past runs (loaded from sent_log)")
 
-    all_results = [run_market(market, today, closing_date) for market in MARKETS]
+    all_results = [run_market(market, today, closing_date, sent_keys) for market in MARKETS]
     market_results = [r for r in all_results if r is not None]
     skipped_markets = [m for m, r in zip(MARKETS, all_results) if r is None]
 
@@ -156,13 +169,17 @@ def main():
     skip_note = f" ({len(skipped_markets)} market(s) skipped -- no free permit source)" if skipped_markets else ""
     print(f"{total_deals} total matched deals across {len(market_results)} markets{skip_note}")
 
-    send_digest_email(
+    sent_ok = send_digest_email(
         market_results,
         skipped_markets=skipped_markets,
         low_inventory_results=low_inventory_results,
         candidate_markets=CANDIDATE_MARKETS,
         run_label=today,
     )
+    if sent_ok:
+        new_keys = [lead_key(r["market"], d["land_lead"]) for r in market_results for d in r["deals"]]
+        append_sent_keys(new_keys)
+        print(f"Logged {len(new_keys)} newly-sent properties to sent_log -- won't be resent.")
     print("Done.")
 
 

@@ -238,10 +238,14 @@ def send_digest_email(market_results, skipped_markets=None, low_inventory_result
     so a market silently missing from the digest is never a surprise.
     low_inventory_results: subset of market_results whose matched-deal count fell below
     run.py's LOW_INVENTORY_THRESHOLD this run -- paired with candidate_markets (pre-vetted,
-    free-permit-friendly backup markets) so the alert always comes with concrete next steps."""
+    free-permit-friendly backup markets) so the alert always comes with concrete next steps.
+
+    Returns True only on a confirmed successful send -- run.py uses this to decide
+    whether to commit this run's leads to sent_log (never mark a lead as sent unless
+    it actually went out)."""
     if not RESEND_API_KEY or not DIGEST_TO:
         print("  [EMAIL SKIPPED -- RESEND_API_KEY or DIGEST_TO not set]")
-        return
+        return False
 
     total_deals = sum(len(r["deals"]) for r in market_results)
     total_unmatched = sum(r["unmatched_count"] for r in market_results)
@@ -290,5 +294,7 @@ def send_digest_email(market_results, skipped_markets=None, low_inventory_result
         with urllib.request.urlopen(req) as resp:
             resp.read()
         print(f"  [DIGEST EMAIL SENT -> {DIGEST_TO}]")
+        return True
     except urllib.error.HTTPError as e:
         print(f"  [EMAIL FAILED: {e.code} {e.read().decode()}]")
+        return False

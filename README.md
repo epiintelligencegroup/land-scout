@@ -13,6 +13,16 @@ public permit activity), drafts a buyer pitch and two draft contracts per
 match, and emails one combined digest -- sectioned by market -- to you to
 forward.
 
+**Every run fetches fresh, and never re-sends the same property.** There is
+no caching layer anywhere -- every live source (`gis_land_sources.py`,
+`live_permit_sources.py`) hits its real API on every single run, and mock
+data is freshly randomized every run too. Separately, `sent_log.py` keeps a
+permanent append-only record (`sent_properties.log`, gitignored) of every
+property ever included in a successfully-sent digest; `run.py` filters
+those out before drafting a pitch for them (saving the Anthropic call too),
+so the same property is never sent twice across any number of runs or days.
+The log only gets written to after a send actually succeeds.
+
 **Free-permit-source gate:** `run.py` only runs a market if its permit
 source is a confirmed free source (`Market.permit_source_is_free` in
 `markets.py`), or you've explicitly pointed `PERMITS_CSV_PATH_<MARKET>` at a
