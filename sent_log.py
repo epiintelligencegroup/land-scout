@@ -5,6 +5,11 @@ append-only plain-text file, one "market_key:apn" identifier per line.
 Intentionally a flat file over a database: this is a low-volume daily list,
 and a flat file is trivial to inspect, diff, or hand-edit if needed.
 
+This file is git-tracked, not gitignored -- the cloud routine clones a
+fresh checkout every scheduled run, so the dedup log has to live in the
+repo itself (committed and pushed back after a successful send) to carry
+forward across days. See the routine's prompt / README for the commit step.
+
 Filtering happens in run.py before drafting a pitch, not just before
 sending -- skipping an already-sent lead also skips its Anthropic API call.
 """

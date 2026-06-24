@@ -34,12 +34,19 @@ deal facts, but are not attorney-reviewed in any state.
 **Every run fetches fresh, and never re-sends the same property.** There is
 no caching layer anywhere -- every live source (`gis_land_sources.py`,
 `live_permit_sources.py`) hits its real API on every single run. Separately,
-`sent_log.py` keeps a permanent append-only record (`sent_properties.log`,
-gitignored) of every property ever included in a successfully-sent digest;
-`run.py` filters those out before drafting a pitch for them (saving the
-Anthropic call too), so the same property is never sent twice across any
-number of runs or days. The log only gets written to after a send actually
-succeeds.
+`sent_log.py` keeps a permanent append-only record (`sent_properties.log`)
+of every property ever included in a successfully-sent digest; `run.py`
+filters those out before drafting a pitch for them (saving the Anthropic
+call too), so the same property is never sent twice across any number of
+runs or days. The log only gets written to after a send actually succeeds.
+
+**This file is git-tracked, not gitignored** -- the cloud routine clones a
+fresh checkout on every scheduled run, so the dedup log has to live in the
+repo itself (committed and pushed back after each successful send) to carry
+forward across days; a local-only file would reset to empty on every cloud
+run. If you ever run this locally too, expect `git status` to show
+`sent_properties.log` as modified after a real send -- commit and push it
+so your local runs and the cloud's daily run share the same history.
 
 **Free-permit-source gate:** `run.py` only runs a market if its permit
 source is a confirmed free source (`Market.permit_source_is_free` in
