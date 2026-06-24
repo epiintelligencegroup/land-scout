@@ -1,15 +1,21 @@
 """
 Live free land-lead sources -- a PropStream alternative for markets where
 a county/city/state GIS system publishes parcel ownership data directly,
-queried live instead of mocked or CSV-exported. All 4 markets are wired up
-as of 2026-06-24 -- Duval and Williamson via re-research that found a live
-ArcGIS layer where the original plan (a static bulk-file download) had hit
-a JS-rendering wall; Gwinnett by finding the *other* layer on a FeatureServer
-already partially checked (layer 0 was cadastral-only, layer 3 has owner +
-value). Lesson generalized: a live ArcGIS REST/Feature Service with owner
-fields beats a bulk-download page almost every time -- check sharing.
-arcgis.com's search API broadly (by county name, "tax assessor", "CAMA",
-"property owner") before concluding a market has no live option.
+queried live instead of mocked or CSV-exported. All 4 active markets are
+wired up as of 2026-06-24 (Travis/Austin replaced Jacksonville/Duval that
+day -- Duval's land side was actually fine, but its permit side never found
+a live source; see markets.py for why). Williamson and Gwinnett needed
+re-research that found a live ArcGIS layer where the original plan (a
+static bulk-file download) had hit a JS-rendering wall; Gwinnett's owner/
+value table turned out to be a different layer on a FeatureServer already
+partially checked (layer 0 was cadastral-only); Travis's similarly needed
+checking a second, more-complete unofficial copy after the "official" TCAD
+service turned out to have land value but no owner field. Lesson
+generalized: a live ArcGIS REST/Feature Service with owner fields beats a
+bulk-download page almost every time, and a disappointing layer/service is
+worth checking siblings of before moving on -- search sharing.arcgis.com's
+API broadly (by county name, "tax assessor", "CAMA", "property owner")
+before concluding a market has no live option.
 
 run.py tries, per market: real CSV override -> a registered live loader here
 -> mock. No market currently falls through to mock as of 2026-06-24, but the
@@ -127,96 +133,89 @@ def fetch_bexar_vacant_land_leads(market, limit=12):
     return leads
 
 
-FL_PARCELS_URL = "https://services5.arcgis.com/GcvM6vDlR2gM4x31/arcgis/rest/services/FL_Parcels/FeatureServer/0/query"
-# Florida DOR's statewide standard Use Code for "Vacant Residential" --
-# confirmed live 2026-06-24 (rows filtered on this have no street number on
-# PHY_ADDR1, the same vacant-land signature seen in every other market).
-DUVAL_VACANT_RESIDENTIAL_DOR_UC = "000"
-DUVAL_MAX_ACRES = 2.0
+TRAVIS_PARCELS_URL = (
+    "https://services1.arcgis.com/HGcSYZ5bvjRswoCb/arcgis/rest/services/"
+    "TCAD_Parcels_Dec_2025/FeatureServer/0/query"
+)
+# This is a more complete working copy of TCAD's parcel data than the
+# "official" EXTERNAL_tcad_parcel service, which has a land value field but
+# no owner field at all -- confirmed live 2026-06-24.
+TRAVIS_VACANT_LAND_TYPE_DESC = "VACANT LOT"
+TRAVIS_MAX_ACRES = 2.0
 
 
-def fetch_duval_vacant_land_leads(market, limit=12):
-    """Live query against Florida's statewide parcels Feature Service --
-    sourced from the same annual DOR NAL submission every FL county
-    property appraiser makes (the exact static file markets.py originally
-    pointed at, which a JS-rendered document library blocked downloading
-    programmatically) -- just exposed here as a live, queryable Feature
-    Service instead. Confirmed live 2026-06-24.
+def fetch_travis_vacant_land_leads(market, limit=12):
+    """Live query against a Travis Central Appraisal District parcel
+    Feature Service. Confirmed live 2026-06-24.
 
-    Unlike Bexar, this layer DOES carry real sale history (SALE_PRC1/
-    SALE_YR1/SALE_MO1) and a Wetlands flag when available -- richer than
-    even PropStream would have given for this market. Still falls back to
-    "unknown" rather than 0 when a given parcel's sale fields are blank.
+    land_homesite_val>0 excludes HOA/common-area slivers, which otherwise
+    dominate small samples of 'VACANT LOT' rows (greenbelts, retention
+    ponds, etc. carry a token land value but no homesite value). That
+    filter alone still let City of Austin-owned right-of-way slivers
+    through (confirmed live -- they carry a real homesite value despite
+    being unsellable), so owner name is also excluded when it starts with
+    a government-entity prefix. deed_date exists on this layer but was
+    unpopulated on every record checked -- sale history comes back
+    "unknown", same treatment as Bexar.
     """
     zips = [z for z, _city, _area in market.zips]
     where = (
-        f"CountyName='Duval' AND DOR_UC='{DUVAL_VACANT_RESIDENTIAL_DOR_UC}' "
-        f"AND Acres<={DUVAL_MAX_ACRES} "
-        f"AND PHY_ZIPCD IN ({','.join(zips)})"
+        f"land_type_desc='{TRAVIS_VACANT_LAND_TYPE_DESC}' AND land_homesite_val>0 "
+        f"AND GIS_acres<={TRAVIS_MAX_ACRES} "
+        f"AND py_owner_name NOT LIKE 'CITY OF%' AND py_owner_name NOT LIKE 'TRAVIS COUNTY%' "
+        f"AND situs_zip IN ({','.join(repr(z) for z in zips)})"
     )
     params = {
         "where": where,
         "outFields": (
-            "PARCEL_ID,OWN_NAME,OWN_ADDR1,OWN_ADDR2,OWN_CITY,OWN_STATE,OWN_ZIPCD,"
-            "PHY_ADDR1,PHY_ADDR2,PHY_CITY,PHY_ZIPCD,LND_VAL,JV,Acres,"
-            "SALE_PRC1,SALE_YR1,SALE_MO1"
+            "geo_id,py_owner_name,py_address,situs_address,situs_city,situs_zip,"
+            "GIS_acres,market_value,land_homesite_val,deed_date"
         ),
         "resultRecordCount": limit,
         "returnGeometry": "false",
         "f": "json",
     }
-    url = f"{FL_PARCELS_URL}?{urllib.parse.urlencode(params)}"
+    url = f"{TRAVIS_PARCELS_URL}?{urllib.parse.urlencode(params)}"
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             data = json.loads(resp.read())
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Duval/FL_Parcels query failed: {e}")
+        raise RuntimeError(f"Travis/TCAD query failed: {e}")
     if "error" in data:
-        raise RuntimeError(f"Duval/FL_Parcels query failed: {data['error']}")
+        raise RuntimeError(f"Travis/TCAD query failed: {data['error']}")
 
     leads = []
     for feature in data.get("features", []):
         attrs = feature["attributes"]
-        situs = " ".join(s for s in [str(attrs.get("PHY_ADDR1") or "").strip(),
-                                      str(attrs.get("PHY_ADDR2") or "").strip()] if s)
-        owner_name = (attrs.get("OWN_NAME") or "").strip()
-        zip_code = str(int(attrs["PHY_ZIPCD"])) if attrs.get("PHY_ZIPCD") else ""
-        acreage = attrs.get("Acres") or 0.0
+        situs = (attrs.get("situs_address") or "").strip()
+        owner_name = (attrs.get("py_owner_name") or "").strip()
+        zip_code = (attrs.get("situs_zip") or "").strip()[:5]
+        acreage = attrs.get("GIS_acres") or 0.0
         if not situs or not owner_name or not zip_code or acreage <= 0:
             continue
 
-        owner_street = ", ".join(s.strip() for s in
-                                  [attrs.get("OWN_ADDR1") or "", attrs.get("OWN_ADDR2") or ""] if s and s.strip())
-        owner_zip = str(int(attrs["OWN_ZIPCD"])) if attrs.get("OWN_ZIPCD") else ""
-        owner_mailing_address = (
-            f"{owner_street}, {(attrs.get('OWN_CITY') or '').strip()}, "
-            f"{(attrs.get('OWN_STATE') or '').strip()} {owner_zip}"
-        )
-        owner_occupied = bool(owner_street) and situs.split()[0] in owner_street
+        owner_mailing_address = (attrs.get("py_address") or "").strip()
+        owner_occupied = bool(owner_mailing_address) and situs.split()[0] in owner_mailing_address
 
-        sale_price = attrs.get("SALE_PRC1") or 0
-        sale_year = int(attrs.get("SALE_YR1") or 0)
-        if sale_price > 0 and sale_year > 0:
-            last_sale_price = sale_price
-            last_sale_date = f"{sale_year}-{(attrs.get('SALE_MO1') or '01').strip().zfill(2)}"
-            years_owned = max(CURRENT_YEAR - sale_year, 0)
-        else:
-            last_sale_price, last_sale_date, years_owned = None, "unknown", None
+        # This layer has deed_date but no sale-price field at all -- pitch.py/
+        # emailer.py expect price+date together, so there's no useful partial
+        # state to report; always "unknown" rather than a date with no price.
+        last_sale_price, last_sale_date, years_owned = None, "unknown", None
 
-        land_val = attrs.get("LND_VAL") or 0.0
+        market_val = attrs.get("market_value") or attrs.get("land_homesite_val") or 0.0
         leads.append(LandLead(
-            apn=str(attrs.get("PARCEL_ID") or ""),
+            apn=(attrs.get("geo_id") or "").strip(),
             owner_name=owner_name,
             owner_mailing_address=owner_mailing_address,
-            property_address=situs,
-            city=(attrs.get("PHY_CITY") or "Jacksonville").strip(),
+            property_address=f"{situs}, {(attrs.get('situs_city') or 'Austin').strip()}",
+            city=(attrs.get("situs_city") or "Austin").strip(),
             state=market.state,
             zip=zip_code,
             county=market.county,
-            land_use="Vacant Land - Residential",
+            land_use="Vacant Lot",
             acreage=acreage,
-            assessed_value=land_val,
-            estimated_value=attrs.get("JV") or land_val,
+            assessed_value=attrs.get("land_homesite_val") or 0.0,
+            estimated_value=market_val,
             last_sale_price=last_sale_price,
             last_sale_date=last_sale_date,
             years_owned=years_owned,
@@ -415,7 +414,7 @@ def fetch_williamson_vacant_land_leads(market, limit=12):
 # Keyed by Market.key -- run.py checks this before falling back to mock.
 LIVE_LAND_LOADERS = {
     "BEXAR_TX": fetch_bexar_vacant_land_leads,
-    "JACKSONVILLE_FL": fetch_duval_vacant_land_leads,
+    "TRAVIS_TX": fetch_travis_vacant_land_leads,
     "GWINNETT_GA": fetch_gwinnett_vacant_land_leads,
     "WILLIAMSON_TN": fetch_williamson_vacant_land_leads,
 }

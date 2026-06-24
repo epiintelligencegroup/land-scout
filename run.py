@@ -34,7 +34,7 @@ from enrichment import enrich
 from gis_land_sources import LIVE_LAND_LOADERS
 from land_data import generate_mock_land_leads, load_land_leads
 from live_permit_sources import LIVE_PERMIT_LOADERS
-from markets import CANDIDATE_MARKETS, JACKSONVILLE_FL, MARKETS
+from markets import CANDIDATE_MARKETS, MARKETS
 from matcher import match_leads_to_builders
 from permits_data import aggregate_builders, generate_mock_permits, load_permits
 from pitch import draft_pitch
@@ -53,15 +53,8 @@ OFFER_PRICE_FACTOR = 0.60
 
 
 def _market_csv_path(market, kind):
-    """kind is "LAND" or "PERMITS". Per-market env var, e.g. LAND_CSV_PATH_BEXAR_TX.
-    Jacksonville also accepts the original unprefixed LAND_CSV_PATH/PERMITS_CSV_PATH
-    for backward compatibility with existing setups."""
-    path = os.environ.get(f"{kind}_CSV_PATH_{market.key}")
-    if path:
-        return path
-    if market is JACKSONVILLE_FL:
-        return os.environ.get(f"{kind}_CSV_PATH") or None
-    return None
+    """kind is "LAND" or "PERMITS". Per-market env var, e.g. LAND_CSV_PATH_BEXAR_TX."""
+    return os.environ.get(f"{kind}_CSV_PATH_{market.key}") or None
 
 
 def _skip_reason(market, permits_csv_path):

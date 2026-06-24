@@ -14,9 +14,8 @@ run. Each Market carries:
     enrichment.py's original Duval TODOs, just one block per market now.
   - a real free land-data source (land_source) as a PropStream alternative,
     for when PropStream itself isn't usable (e.g. free-trial export limits).
-    Bexar's is live-wired in gis_land_sources.py; Duval/Gwinnett's are
-    confirmed real and free but not yet fetchable without one manual
-    download to pin down the exact column layout.
+    Live-wired for all 4 active markets in gis_land_sources.py as of
+    2026-06-24.
 
 Going live in a new market is: confirm the permit/GIS endpoints below, then
 update land_data.py/permits_data.py/enrichment.py's load-real-data paths --
@@ -54,52 +53,69 @@ class Market:
     land_source: str = ""
 
 
-JACKSONVILLE_FL = Market(
-    key="JACKSONVILLE_FL",
-    label="Jacksonville, FL (Duval County)",
-    county="Duval",
-    state="FL",
+TRAVIS_TX = Market(
+    key="TRAVIS_TX",
+    label="Austin, TX (Travis County)",
+    county="Travis",
+    state="TX",
+    # Replaced Jacksonville/Duval 2026-06-24 -- Duval's land side was real
+    # (Florida's statewide FL_Parcels service) but its permit side never
+    # found a live source (JaxEPICS is an Azure-AD-secured Angular SPA with
+    # no public API, confirmed by inspecting its JS bundle; the city's own
+    # stats pages just point back to it). Austin/Travis has both sides
+    # confirmed live and free -- see permit_source/land_source below.
     zips=[
-        ("32208", "Jacksonville", "Northwest Jacksonville"),
-        ("32209", "Jacksonville", "Northwest Jacksonville"),
-        ("32218", "Jacksonville", "North Jacksonville"),
-        ("32220", "Jacksonville", "Westside"),
-        ("32221", "Jacksonville", "Westside"),
-        ("32222", "Jacksonville", "Westside"),
-        ("32234", "Jacksonville", "Baldwin"),
-        ("32244", "Jacksonville", "Westside"),
-        ("32246", "Jacksonville", "Southside"),
-        ("32257", "Jacksonville", "Mandarin"),
-        ("32277", "Jacksonville", "Arlington"),
+        ("78745", "Austin", "South Austin/Galindo"),
+        ("78704", "Austin", "South Congress/Travis Heights"),
+        ("78723", "Austin", "Mueller/Windsor Park"),
+        ("78721", "Austin", "East Austin/MLK"),
+        ("78744", "Austin", "Southeast Austin/Montopolis"),
+        ("78754", "Austin", "Northeast Austin/Springdale"),
+        ("78617", "Austin", "Del Valle"),
+        ("78753", "Austin", "North Austin/Coronado Hills"),
+        ("78758", "Austin", "North Austin/Domain Area"),
+        ("78759", "Austin", "Northwest Hills"),
     ],
     builder_names=[
-        "Jacksonville Custom Homes LLC", "Coastal Bay Builders", "Riverside Construction Group",
-        "First Coast Home Builders", "Duval Infill Homes", "Magnolia Park Builders",
-        "Sunbelt Residential LLC", "Atlantic Shore Construction", "Northbank Builders Inc",
-        "Cypress Creek Homes",
+        "South Congress Builders", "East Austin Infill Homes", "Hill Country Custom Homes LLC",
+        "Mueller Park Construction Group", "Barton Springs Builders", "Domain Premier Homes",
+        "Travis Heights Construction", "Lone Star Infill Builders", "Zilker Park Homes",
+        "Austin Premier Construction",
     ],
-    zoning_codes=["RS-1", "RS-2", "RLD-60", "RLD-90", "RR-Acre"],
+    zoning_codes=["SF-1", "SF-2", "SF-3", "SF-4A", "SF-6"],
     permit_source=(
-        "JaxEPICS (jaxepics.coj.net) -- City of Jacksonville/Duval County's permitting "
-        "system. Publishes daily/monthly permit reports; exact export columns not "
-        "confirmed against a live fetch (see README)."
+        "LIVE AND WIRED UP (2026-06-24): City of Austin's 'Issued Construction Permits' "
+        "Socrata dataset (data.austintexas.gov/resource/3syk-w9eu.json) -- free, no "
+        "login, queryable via SoQL. Filters on permittype='BP' (the main building "
+        "permit, not electrical/mechanical sub-permits), permit_class='R- 101 Single "
+        "Family Houses', work_class='New'. Confirmed real, current builders: "
+        "Brookfield Residential Texas Homes LLC, Tri Pointe Homes, Trophy Signature "
+        "Homes, Sanctuary Builders of Texas Inc, etc. (permits issued into June 2026). "
+        "total_job_valuation/building_valuation are unpopulated on these records (same "
+        "'unknown, not zero' treatment as Bexar) -- total_new_add_sqft is present but "
+        "unused since Permit has no square-footage field."
     ),
     gis_source=(
-        "Duval County GIS / JaxGIS (maps.coj.net), ArcGIS REST-based. Parcel cross-"
-        "reference: duvalcad.org (Property Appraiser). maps.coj.net returned a "
-        "maintenance page when last checked -- live endpoint not yet confirmed."
+        "Travis County TNR GeoHub (tnr-traviscountytx.hub.arcgis.com / "
+        "tnr-traviscountytx.opendata.arcgis.com), ArcGIS Hub -- free, Parcels/Zoning "
+        "Districts/Flood Risk layers. Official TCAD parcel layer also exists "
+        "(services.arcgis.com/0L95CJ0VTaxqcmED/.../EXTERNAL_tcad_parcel) but has no "
+        "owner field -- see land_source below for the one that does."
     ),
     permit_source_is_free=True,
     land_source=(
-        "LIVE AND WIRED UP (2026-06-24): Florida's statewide 'FL_Parcels' ArcGIS "
-        "Feature Service (services5.arcgis.com/GcvM6vDlR2gM4x31/.../FL_Parcels/"
-        "FeatureServer/0) -- free, queryable, no login. Sourced from the same annual "
-        "DOR NAL submission every FL county property appraiser makes (the exact file "
-        "type the original plan pointed at, whose download page turned out to be a "
-        "JS-rendered document library); this is that same data live instead. Filters "
-        "on DOR_UC='000', Florida's statewide 'Vacant Residential' use code. Unlike "
-        "Bexar, DOES carry real sale history (SALE_PRC1/SALE_YR1/SALE_MO1) when "
-        "available -- richer than even PropStream for this market."
+        "LIVE AND WIRED UP (2026-06-24): 'TCAD_Parcels_Dec_2025' ArcGIS Feature "
+        "Service (services1.arcgis.com/HGcSYZ5bvjRswoCb/.../TCAD_Parcels_Dec_2025/"
+        "FeatureServer/0) -- free, queryable, no login. A more complete working copy "
+        "of Travis Central Appraisal District's parcel data than the 'official' "
+        "EXTERNAL_tcad_parcel service (which has land value but no owner field at "
+        "all). Filters on land_type_desc='VACANT LOT' AND land_homesite_val>0 (excludes "
+        "HOA/common-area slivers) AND py_owner_name NOT LIKE 'CITY OF%'/'TRAVIS COUNTY%' "
+        "(land_homesite_val alone didn't exclude government-owned ROW slivers, which "
+        "otherwise dominate small samples -- confirmed live). Has owner name/mailing "
+        "address/situs address/acreage/value. deed_date exists but was unpopulated on "
+        "every record checked, and there's no sale-price field at all on this layer -- "
+        "sale history comes back 'unknown', same as Bexar."
     ),
 )
 
@@ -186,11 +202,20 @@ GWINNETT_GA = Market(
     ],
     zoning_codes=["R-100", "R-75", "R-60", "RSL", "RTH"],
     permit_source=(
-        "Gwinnett County Dept. of Planning & Development publishes weekly 'Building "
-        "Permits Issued' reports (gwinnettcounty.com/.../building-permits-issued) -- "
-        "free, but PDF format, not a structured CSV (column layout would need to be "
-        "confirmed/parsed once live). Individual permits are also searchable for free "
-        "via the county's live Citizen Access/Accela portal (aca-prod.accela.com/GWINNETT)."
+        "LIVE AND WIRED UP (2026-06-24): Gwinnett County Dept. of Planning & "
+        "Development's weekly 'Building Permits Issued' PDF report "
+        "(gwinnettcounty.com/.../building-permits-issued) -- free, no login, but PDF "
+        "not CSV/API, parsed with pdfplumber (this project's first non-stdlib "
+        "dependency -- see live_permit_sources.py's module docstring). The report's "
+        "URL slug isn't consistently formatted week to week, so the loader discovers "
+        "the latest report from the listing page rather than guessing a URL. Filters "
+        "on CENSUS CODE description 'Single Family - Detatched' [sic] / 'Single "
+        "Family - Attached'. Confirmed real, current builders: TAYLOR MORRISON OF "
+        "GEORGIA, STANLEY MARTIN HOMES, PULTE HOME COMPANY, etc. No property zip "
+        "field in the report (only a city name) -- zip is recovered via market.zips' "
+        "city list, so a permit in a Gwinnett city outside that list is skipped. "
+        "Individual permits are also searchable live via the county's Citizen Access/"
+        "Accela portal (aca-prod.accela.com/GWINNETT) as an alternative, not used here."
     ),
     gis_source=(
         "Gwinnett County Open Data Portal (gcgis-gwinnettcountyga.hub.arcgis.com), "
@@ -273,7 +298,7 @@ WILLIAMSON_TN = Market(
     ),
 )
 
-MARKETS = [JACKSONVILLE_FL, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN]
+MARKETS = [TRAVIS_TX, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN]
 
 
 @dataclass
@@ -293,25 +318,6 @@ class CandidateMarket:
 
 
 CANDIDATE_MARKETS = [
-    CandidateMarket(
-        label="Austin, TX (Travis County)",
-        county="Travis",
-        state="TX",
-        permit_source=(
-            "City of Austin Open Data (data.austintexas.gov) -- Socrata-based, free, "
-            "multiple ready CSV exports ('Issued Construction Permits', 'Issued "
-            "Building Permits', 'Building Permits Issued since 2010'), BLDS-compliant "
-            "(standardized building-permit schema). Best-confirmed permit source of "
-            "any market researched so far, active or candidate."
-        ),
-        gis_source=(
-            "Travis County Open Data Portal / TNR GeoHub (tnr-traviscountytx.opendata."
-            "arcgis.com), ArcGIS Hub -- free, has Parcels, Zoning Districts, and a "
-            "Flood Risk web map layer."
-        ),
-        permit_source_is_free=True,
-        note="Strongest candidate -- a real Socrata CSV with a standardized schema beats every other market's permit source.",
-    ),
     CandidateMarket(
         label="Raleigh, NC (Wake County)",
         county="Wake",
