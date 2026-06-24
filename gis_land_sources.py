@@ -62,10 +62,17 @@ def fetch_bexar_vacant_land_leads(market, limit=12):
     owned, or tax-delinquent status, unlike PropStream. Those come back as
     explicit "unknown" markers (see pitch.py/emailer.py for how that's
     displayed) rather than invented numbers.
+
+    ImprVal<=0 added 2026-06-24: Houses='0' alone isn't reliable -- confirmed
+    live 23 parcels with Houses='0' but ImprVal>0 (e.g. fences/septic/paving,
+    in a few cases up to $500K+ of actual improvement value on parcels BCAD
+    still codes as vacant). ImprVal is BCAD's real improvement-value field;
+    filtering on it directly catches stale Houses flags that a Street View
+    check would otherwise catch manually.
     """
     zips = [z for z, _city, _area in market.zips]
     where = (
-        f"State_cd='{BEXAR_VACANT_LAND_STATE_CD}' AND Houses='0' "
+        f"State_cd='{BEXAR_VACANT_LAND_STATE_CD}' AND Houses='0' AND ImprVal<=0 "
         f"AND LglAcres<={BEXAR_MAX_ACRES} "
         f"AND Zip IN ({','.join(repr(z) for z in zips)})"
     )
@@ -157,10 +164,19 @@ def fetch_travis_vacant_land_leads(market, limit=12):
     a government-entity prefix. deed_date exists on this layer but was
     unpopulated on every record checked -- sale history comes back
     "unknown", same treatment as Bexar.
+
+    imprv_homesite_val<=0 AND imprv_non_homesite_val<=0 added 2026-06-24:
+    land_type_desc='VACANT LOT' is stale on a meaningful slice of this data
+    -- confirmed live 36 of 3673 candidate rows actually carry a positive
+    improvement value, several with F1year_imprv of 2024 and imprv values
+    in the hundreds of thousands (i.e. a brand-new house TCAD hasn't
+    relabeled yet). Both imprv fields are 0, never NULL, across this
+    universe, so the plain <=0 comparison is safe.
     """
     zips = [z for z, _city, _area in market.zips]
     where = (
         f"land_type_desc='{TRAVIS_VACANT_LAND_TYPE_DESC}' AND land_homesite_val>0 "
+        f"AND imprv_homesite_val<=0 AND imprv_non_homesite_val<=0 "
         f"AND GIS_acres<={TRAVIS_MAX_ACRES} "
         f"AND py_owner_name NOT LIKE 'CITY OF%' AND py_owner_name NOT LIKE 'TRAVIS COUNTY%' "
         f"AND situs_zip IN ({','.join(repr(z) for z in zips)})"
@@ -242,10 +258,18 @@ def fetch_gwinnett_vacant_land_leads(market, limit=12):
     (layer 3 of the Property_and_Tax FeatureServer -- layer 0 on this same
     service is cadastral-only, no owner/value, and was correctly rejected
     earlier; layer 3 has everything PropStream would have given except
-    sale history, which this table doesn't carry)."""
+    sale history, which this table doesn't carry).
+
+    DWLGVAL1='0' added 2026-06-24: PROPCLAS='100' alone is stale on at least
+    one confirmed-live row (a parcel with LANDVAL1=65300/DWLGVAL1=227200 --
+    an actual house -- still coded as Residential Vacant). DWLGVAL1 is this
+    table's dwelling-value field; despite being typed as a string, every
+    PROPCLAS='100' row checked has it populated as a literal '0' (never
+    NULL/blank), so an exact-string filter is safe here.
+    """
     zips = [z for z, _city, _area in market.zips]
     where = (
-        f"PROPCLAS='{GWINNETT_VACANT_RESIDENTIAL_PROPCLAS}' "
+        f"PROPCLAS='{GWINNETT_VACANT_RESIDENTIAL_PROPCLAS}' AND DWLGVAL1='0' "
         f"AND LOCZIP IN ({','.join(repr(z) for z in zips)})"
     )
     params = {
