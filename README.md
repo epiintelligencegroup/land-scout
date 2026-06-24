@@ -42,31 +42,33 @@ a suggested market still requires an actual code change (a new `Market`
 entry with real zips/builder names, same as the original 4) -- the alert
 tells you it's time, it doesn't do it automatically.
 
-## Current state: San Antonio is fully real, the rest is still mock
+## Current state: land leads are fully real in all 4 markets; buyer data is real only for San Antonio
 
-- **Land leads** -- a per-market priority chain in `run.py`: real CSV
-  override (`LAND_CSV_PATH_<MARKET>`) -> a live free GIS source if one's
-  registered in `gis_land_sources.py` -> mock data shaped like a PropStream
-  export. **Bexar County (San Antonio) is live** as of 2026-06-23: queries
-  Bexar's public ArcGIS Parcels layer directly (no PropStream needed, no
-  login) -- see `gis_land_sources.py`. Jacksonville and Atlanta Suburbs are
-  still mock; their free alternatives are confirmed real (see
-  `Market.land_source` in `markets.py`) but each needs one manual download
-  first (see "PropStream alternative" below) before a loader can be built --
-  same "raise rather than guess" rule as every other loader here. Once
-  you've used PropStream for real, `LAND_CSV_PATH_<MARKET>` still works
-  exactly as documented for any market.
-- **Builder/buyer data** -- same priority chain, live loaders registered in
-  `live_permit_sources.py`. **Bexar County (San Antonio) is live** as of
-  2026-06-24: streams City of San Antonio's public permit export and keeps
-  real new-construction permits (real builders: LENNAR HOMES, PERRY HOMES,
-  CHESMAR HOMES, etc. -- 600+ permits from LENNAR alone in this market).
-  That feed never populates a declared value for residential permits, so
-  construction-value range is omitted from the buyer-fit reasoning rather
-  than showing a fake $0. Jacksonville and Atlanta Suburbs are still mock;
-  see the table below for why (JaxEPICS is a JS-rendered SPA with no
-  discoverable API; Gwinnett's options are PDF reports or an Accela search
-  portal, neither cleanly machine-readable).
+- **Land leads -- LIVE in all 4 markets as of 2026-06-24.** A per-market
+  priority chain in `run.py`: real CSV override (`LAND_CSV_PATH_<MARKET>`)
+  -> a live free GIS source registered in `gis_land_sources.py` -> mock
+  data shaped like a PropStream export. Every market now has a live
+  loader: Bexar queries its own ArcGIS Parcels layer; Jacksonville queries
+  Florida's *statewide* parcels Feature Service (same DOR data the original
+  plan wanted, just live instead of a static file download); Gwinnett
+  queries the owner/value table sitting on the same ArcGIS service whose
+  cadastral-only layer was checked and rejected earlier; Williamson queries
+  its own GIS parcels table over HTTP (its HTTPS cert doesn't validate --
+  low risk for public records). Williamson's loader has one known
+  approximation (no real zip-code field exists on that table -- see
+  `Market.land_source` in `markets.py`), but it doesn't matter yet since
+  that market still won't run until its permit gate clears (see below).
+- **Builder/buyer data -- still only real for Bexar/San Antonio.** Same
+  priority chain, live loaders registered in `live_permit_sources.py`.
+  San Antonio streams real new-construction permits (real builders: LENNAR
+  HOMES, PERRY HOMES, CHESMAR HOMES, etc. -- 600+ permits from LENNAR
+  alone). Jacksonville and Atlanta Suburbs are still mock on this side --
+  JaxEPICS is a JS-rendered SPA with no discoverable API; Gwinnett's
+  options are PDF reports or an Accela search portal, neither cleanly
+  machine-readable. **This means Jacksonville and Atlanta Suburbs deals
+  right now have a real property matched to a fictional buyer** -- same
+  caveat as before, just shifted: the unreal half moved from land to
+  permits for those two markets.
 - **Zoning/flood/wetland enrichment** -- mocked in `enrichment.py`, with a
   plausible zoning-code vocabulary per market. Real GIS sources exist for
   all four counties (see below), but none of those endpoints have been
@@ -96,11 +98,15 @@ in `markets.py`; summary:
 | Atlanta Suburbs, GA | Gwinnett County weekly "Building Permits Issued" PDF reports (free, PDF not CSV); live Citizen Access/Accela search portal | Gwinnett County Open Data Portal (ArcGIS Hub, has a Zoning layer); flood via Gwinnett Flood Information Portal |
 | Nashville Suburbs, TN | **Not confirmed as a free bulk export.** County only permits unincorporated land; its Electronic Plan Review System looks like a submission portal, not a public search/report tool. Most growth is inside incorporated cities (Franklin, Brentwood, Spring Hill, Nolensville) that permit separately through their own portals -- going live here means wiring up several city sources or a paid vendor, not one county export. | Williamson County GIS (ArcGIS/Geocortex-based) -- a live ArcGIS REST flood layer was confirmed reachable; zoning district viewer also available |
 
-## PropStream alternative: free county land data
+## PropStream alternative: free county/state land data
 
 PropStream's free trial blocks CSV export, so `gis_land_sources.py` queries
-county/city GIS systems directly as a free alternative -- same idea as the
-permit/GIS sources above, just for the land-lead side.
+county/state GIS systems directly as a free alternative, live, in all 4
+markets as of 2026-06-24. Pattern that worked repeatedly: a live ArcGIS
+REST/Feature Service with owner+value fields beats a bulk-download page --
+check `sharing.arcgis.com`'s search API broadly (by county name, "tax
+assessor", "CAMA", "property owner") rather than concluding too early that
+a market has no live option.
 
 - **Bexar (San Antonio) -- live.** Queries `maps.bexar.org`'s public ArcGIS
   Parcels layer (`State_cd='C1'`, the Texas Comptroller's standard "vacant
@@ -109,28 +115,27 @@ permit/GIS sources above, just for the land-lead side.
   sale price/date, years owned, tax-delinquent status) -- PropStream
   provided those; this source doesn't, so `pitch.py`/`emailer.py` show
   "not available from this data source" rather than inventing numbers.
-- **Jacksonville (Duval) -- confirmed real, not yet wired up.** Florida's
-  DOR Data Portal publishes free NAL (real property roll) + SDF (sale
-  data) files per county, per Florida Statute 195.052 -- but the download
-  page is a JS-rendered document library that couldn't be fetched
-  programmatically this session. **Needs one manual step:** visit
-  floridarevenue.com/property/Pages/DataPortal.aspx, find Duval's NAL file
-  under Tax Roll Data Files, download it, and either point
-  `LAND_CSV_PATH_JACKSONVILLE_FL` at it (loader will raise on column
-  mismatch, same as any other CSV here) or hand it back so the exact NAL
-  layout can be wired into a live-equivalent loader.
-- **Atlanta Suburbs (Gwinnett) -- confirmed real, not yet wired up.** A
-  live ArcGIS Feature Service exists (`services3.arcgis.com/.../
-  Property_and_Tax/FeatureServer/0`) but it's cadastral-only -- address and
-  acreage, no owner name or value. The actual owner/value source is the
-  county Assessor's quarterly "Property Ownership Database" ZIP, which
-  returned an HTML page instead of the file when fetched programmatically
-  (likely needs a real browser session). **Needs one manual download** from
-  gwinnettcounty.com (County Administrator -> Assessor -> Property
-  Ownership Database) the same way as Duval above.
-- **Nashville Suburbs (Williamson) -- not researched for land data.** This
-  market is already skipped by the free-permit-source gate, so it won't
-  run regardless of its land source until that's resolved too.
+- **Jacksonville (Duval) -- live.** Queries Florida's *statewide* parcels
+  Feature Service (`FL_Parcels`, ArcGIS Online) -- the exact same annual
+  DOR data the original plan wanted as a static NAL file download (blocked
+  by a JS-rendered document library), exposed live instead. Filters on
+  `DOR_UC='000'`, Florida's statewide "Vacant Residential" code. Unlike
+  Bexar, **does** carry real sale history when available.
+- **Atlanta Suburbs (Gwinnett) -- live.** The owner/value table (layer 3,
+  "Property and Tax Table") was sitting on the *same* `Property_and_Tax`
+  Feature Service whose cadastral-only layer 0 was checked and rejected
+  earlier -- just a different layer index on a service already found.
+  Filters on `PROPCLAS='100'`, Gwinnett's own "Residential Vacant" code.
+  No sale-history fields in this table.
+- **Nashville Suburbs (Williamson) -- live, with one known gap.** Queries
+  Williamson County's own GIS parcels table over plain HTTP (its HTTPS
+  cert doesn't validate -- low risk for public records). No explicit
+  land-use code field, so vacant land is inferred as `imp_assess<=0 AND
+  total_asse>0` (no improvement value). **Real limitation:** the table has
+  no usable property-zip-code field and its `CITY` field is a numeric code
+  with no resolvable lookup, so every lead gets `market.zips[0]` as a
+  placeholder zip/city -- wrong in that one detail. Doesn't matter yet
+  since this market still won't run until its permit gate clears (above).
 
 ## Files
 

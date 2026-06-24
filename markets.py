@@ -91,15 +91,15 @@ JACKSONVILLE_FL = Market(
     ),
     permit_source_is_free=True,
     land_source=(
-        "Florida DOR Property Tax Oversight Data Portal (floridarevenue.com/property/"
-        "Pages/DataPortal.aspx) -- free, statewide, per Florida Statute 195.052: NAL "
-        "(Name-Address-Legal, real property roll) + SDF (Sale Data File) per county. "
-        "Confirmed these file types exist for every FL county; the actual download is "
-        "a JS-rendered document library this session couldn't fetch through "
-        "programmatically -- needs one manual download to confirm exact NAL/SDF column "
-        "layout before a loader is built. Duval Property Appraiser's own site "
-        "(duvalcountypropertyappraiser.org/tax-roll) also offers a direct tax-roll "
-        "download as a backup."
+        "LIVE AND WIRED UP (2026-06-24): Florida's statewide 'FL_Parcels' ArcGIS "
+        "Feature Service (services5.arcgis.com/GcvM6vDlR2gM4x31/.../FL_Parcels/"
+        "FeatureServer/0) -- free, queryable, no login. Sourced from the same annual "
+        "DOR NAL submission every FL county property appraiser makes (the exact file "
+        "type the original plan pointed at, whose download page turned out to be a "
+        "JS-rendered document library); this is that same data live instead. Filters "
+        "on DOR_UC='000', Florida's statewide 'Vacant Residential' use code. Unlike "
+        "Bexar, DOES carry real sale history (SALE_PRC1/SALE_YR1/SALE_MO1) when "
+        "available -- richer than even PropStream for this market."
     ),
 )
 
@@ -200,13 +200,15 @@ GWINNETT_GA = Market(
     ),
     permit_source_is_free=True,
     land_source=(
-        "Gwinnett County Assessor 'Property Ownership Database' (gwinnettcounty.com -> "
-        "County Administrator -> Assessor -> Property Ownership Database) -- free, "
-        "quarterly ZIP of Excel files with owner name/mailing address/assessed value, "
-        "per the county's own page. The direct download link returned an HTML page "
-        "instead of the ZIP when fetched programmatically this session (likely needs "
-        "a real browser session/cookies) -- needs one manual download to confirm exact "
-        "column layout before a loader is built."
+        "LIVE AND WIRED UP (2026-06-24): 'Property and Tax Table', layer 3 of the same "
+        "Property_and_Tax ArcGIS Feature Service whose layer 0 (cadastral-only parcel "
+        "boundaries, no owner/value) was checked and rejected earlier -- the owner/"
+        "value table was sitting on the same service the whole time, just a different "
+        "layer index. Filters on PROPCLAS='100', Gwinnett's own 'Residential Vacant' "
+        "property class code. No sale-history fields in this table -- 'unknown' from "
+        "gis_land_sources.py, same as Bexar. (The quarterly Assessor ZIP export "
+        "mentioned in earlier research is no longer needed now that this live path "
+        "works, but is still a real, free fallback if this service ever goes dark.)"
     ),
 )
 
@@ -255,7 +257,20 @@ WILLIAMSON_TN = Market(
     # skips this market by default rather than quietly running on mock data
     # implying a free feed that doesn't actually exist yet.
     permit_source_is_free=False,
-    land_source="Not yet researched -- this market is already skipped on the permit gate above.",
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-24): Williamson County's own GIS parcels attribute "
+        "table (arcgis2.williamsoncounty-tn.gov, IDT/DataPull MapServer layer 4) -- "
+        "free, HTTP only (this government server's HTTPS cert doesn't validate; the "
+        "data is public record, low risk over plain HTTP). No explicit land-use code "
+        "field, so vacant land is inferred as imp_assess<=0 AND total_asse>0 (no "
+        "improvement value). Real caveat: no usable property-zip-code field exists on "
+        "this table (own_zip is the owner's mailing zip, not the parcel's), and CITY "
+        "is a numeric code with no resolvable lookup -- every lead gets market.zips[0] "
+        "as a placeholder zip/city. Wrong in that one detail, but this market doesn't "
+        "run yet anyway (still gated off on the permit side above) -- worth solving "
+        "properly (likely via reverse-geocoding the parcel geometry) before that gate "
+        "is ever lifted."
+    ),
 )
 
 MARKETS = [JACKSONVILLE_FL, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN]
