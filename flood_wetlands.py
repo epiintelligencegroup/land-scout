@@ -45,7 +45,7 @@ def _query_point(url, lon, lat, out_fields):
         "f": "json",
     }
     full_url = f"{url}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(full_url, timeout=20) as resp:
+    with urllib.request.urlopen(full_url, timeout=30) as resp:
         data = json.loads(resp.read())
     if "error" in data:
         raise RuntimeError(f"Query failed ({url}): {data['error']}")
@@ -72,7 +72,7 @@ def is_zone_x_no_shading(lat, lon):
     """
     try:
         features = _query_point(FEMA_NFHL_FLOOD_ZONES_URL, lon, lat, "FLD_ZONE,ZONE_SUBTY")
-    except (RuntimeError, urllib.error.URLError):
+    except (RuntimeError, urllib.error.URLError, OSError):
         return None
     if not features:
         return None
@@ -87,7 +87,7 @@ def has_wetlands(lat, lon):
     should treat None as "can't confirm clear", not as a pass)."""
     try:
         features = _query_point(USFWS_WETLANDS_URL, lon, lat, "Wetlands.ATTRIBUTE")
-    except (RuntimeError, urllib.error.URLError):
+    except (RuntimeError, urllib.error.URLError, OSError):
         return None
     return len(features) > 0
 
