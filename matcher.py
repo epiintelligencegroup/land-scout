@@ -2,9 +2,10 @@
 Matches land leads to builder buyer-candidates. Zip/area overlap is the
 real signal here -- a builder repeatedly pulling permits in a zip is
 genuine, observed demand for buildable lots there. Permit construction
-value doesn't reliably bound what a builder will pay for raw land (it's
-the cost to build the house, not the lot), so it's surfaced as context for
-the human pitching the deal rather than used as a hard price filter.
+value is also used as a rough affordability gate: a lot whose assessed
+value exceeds 3x the builder's max typical construction spend is almost
+certainly priced out of their range and is dropped from that pairing.
+The filter is skipped when either value is unknown (None or zero).
 """
 from dataclasses import dataclass
 
@@ -29,6 +30,17 @@ def match_leads_to_builders(land_leads, builders):
             unmatched.append(lead)
             continue
         for builder in top_candidates:
+            # Drop pairings where the lot is priced way beyond what this
+            # builder typically spends on construction. 3x their max is a
+            # generous ceiling -- a builder at $135k/build won't touch a
+            # $1.5M lot. Only applied when both values are known and nonzero.
+            if (
+                builder.max_construction_value
+                and lead.assessed_value
+                and lead.assessed_value > 3 * builder.max_construction_value
+            ):
+                continue
+
             if builder.min_construction_value is not None:
                 value_clause = (
                     f", building in the ${builder.min_construction_value:,.0f}-"
