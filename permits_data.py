@@ -51,6 +51,11 @@ NON_BUILDER_KEYWORDS = (
     "EXCAVAT", "GRADING", "PAVING", "FRAMING", "INSULATION", "SEPTIC",
     "DEMOLITION", "TRIM", "REALTY", "REAL ESTATE", "REMODEL",
     "RESTORATION", "ARCHITECTURE",
+    # Added 2026-06-25 after a live Nashville run matched "SELF CONTRACTOR
+    # RESIDENTIAL (SEE APPLICANT INFORMATION)" as a buyer -- a generic
+    # placeholder Metro Nashville's permit system uses whenever a homeowner
+    # acts as their own contractor, not a real single repeat-buyer entity.
+    "SELF CONTRACTOR",
 )
 
 

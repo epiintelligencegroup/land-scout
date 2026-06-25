@@ -1,6 +1,6 @@
 # Land Scout -- AI-assisted vacant land wholesaling pipeline
 
-Runs six target markets every pass (see `markets.py`):
+Runs ten target markets every pass (see `markets.py`):
 
 - **Austin, TX** (Travis County)
 - **San Antonio, TX** (Bexar County)
@@ -8,6 +8,10 @@ Runs six target markets every pass (see `markets.py`):
 - **Nashville Suburbs, TN** (Williamson County) -- currently **skipped**, see below
 - **Medina County, TX** (Natalia area) -- real land leads only, see below
 - **Atascosa County, TX** (Poteet area) -- real land leads only, see below
+- **Charlotte, NC** (Mecklenburg County) -- fully real both sides, see below
+- **Phoenix Metro, AZ** (Mesa/Maricopa County) -- fully real both sides, scoped to Mesa, see below
+- **Nashville, TN** (Davidson County) -- fully real both sides, see below
+- **Raleigh, NC** (Wake County) -- fully real both sides, scoped to Raleigh, see below
 
 For each market it finds vacant land leads, enriches each with zoning/flood/
 wetland status, matches them to active local home builders (identified from
@@ -25,16 +29,43 @@ This also bypasses the free-permit-source gate below -- there's no permit
 step to gate -- since neither county has a confirmed free permit source
 anyway (same dead end as Williamson, see `markets.py`).
 
-## Current state: 3 of 4 active markets are fully real, end to end
+**Mecklenburg/Maricopa/Davidson/Wake (`Market.full_lead_quality_filter=True`)
+get a stricter lead-quality filter stack**, added 2026-06-25: individual
+person owner only (no LLC/INC/CORP/HOMES/CONSTRUCTION/BUILDERS/REALTY/TRUST/
+ESTATE/LP/LTD/HOLDINGS/CO/COMPANY/ASSOCIATION/HOA/CENTER -- see
+`gis_land_sources.py`'s `NON_INDIVIDUAL_OWNER_PATTERNS`), vacant land only, a
+real street number required (no parcel without one -- learned the hard way
+from a real incident, see `markets.py`'s Medina notes), and -- new
+capability, not present for any other market -- a live flood-zone and
+wetlands filter (`flood_wetlands.py`, FEMA's National Flood Hazard Layer +
+USFWS's National Wetlands Inventory, both free nationwide federal ArcGIS
+services). "No high flood risk" means any FEMA Zone X (FEMA's own
+classification only calls A/AE/AH/AO/V/VE "high risk" -- an earlier, stricter
+version of this filter also excluded the shaded/moderate-risk X subtype and
+that turned out to be wrong: it returned zero leads for the entire Phoenix
+metro, whose desert-wash terrain is heavily shaded-X-mapped).
 
-**Austin (Travis), San Antonio (Bexar), and Atlanta Suburbs (Gwinnett) are
-fully real on both sides** -- a real property with a real owner, matched to
-a real home builder with real, current permit activity. Confirmed real
-builders showing up in live data as of 2026-06-24: D R Horton Homes, David
-Weekley Homes, Brookfield Residential, Tri Pointe Homes, Trophy Signature
-Homes (Austin); LENNAR HOMES, PERRY HOMES, CHESMAR HOMES (San Antonio);
-TAYLOR MORRISON OF GEORGIA, STANLEY MARTIN HOMES, PULTE HOME COMPANY
-(Gwinnett). **Williamson County (Nashville suburbs) is skipped** every run
+Maricopa and Wake are scoped narrower than their full counties (Mesa only;
+Raleigh only) -- see `markets.py` for why: the only confirmed-free permit
+source with real builder names in each county covers just that one city.
+
+## Current state: 7 of 10 markets are fully real, end to end
+
+**Austin (Travis), San Antonio (Bexar), Atlanta Suburbs (Gwinnett),
+Charlotte (Mecklenburg), Phoenix Metro (Maricopa/Mesa), Nashville (Davidson),
+and Raleigh (Wake) are fully real on both sides** -- a real property with a
+real owner, matched to a real home builder with real, current permit
+activity. Confirmed real builders showing up in live data: D R Horton Homes,
+David Weekley Homes, Brookfield Residential, Tri Pointe Homes, Trophy
+Signature Homes (Austin); LENNAR HOMES, PERRY HOMES, CHESMAR HOMES (San
+Antonio); TAYLOR MORRISON OF GEORGIA, STANLEY MARTIN HOMES, PULTE HOME
+COMPANY (Gwinnett); Northway Homes, Mattamy Carolina Corp (Charlotte);
+Brighton Homes LLC (Mesa); Meritage Homes of TN, Regent Homes, Goodall Homes
+(Nashville); Lennar Carolinas, M/I Homes, Pulte (Raleigh, though see
+`markets.py` for why Raleigh's *recent* volume is genuinely thin right now).
+Medina and Atascosa Counties (Natalia/Poteet) are real on the land side only
+by design -- the user has a direct buyer there, see above. **Williamson
+County (Nashville suburbs) is skipped** every run
 -- no confirmed free permit source was found there despite real effort (see
 below) -- so it never reaches mock-vs-real territory; it just doesn't run.
 
@@ -91,6 +122,10 @@ exact field names and filter values) lives in each `Market` record's
 | Nashville Suburbs, TN | Williamson County GIS parcels table (ArcGIS, HTTP only) -- live, with a known zip/city placeholder gap | **Not confirmed as a free bulk export.** County only permits unincorporated land; growth is mostly inside incorporated cities that permit separately. Market is skipped until this changes. |
 | Medina County, TX | Medina CAD parcel data, hosted on ArcGIS Online by BIS Consulting -- live, owner+value+address | Not confirmed free (same dead end as Williamson) -- moot, `skip_builder_matching=True` |
 | Atascosa County, TX | Atascosa CAD parcel data, same vendor/schema as Medina -- live, owner+value+address | Not confirmed free (same dead end as Williamson) -- moot, `skip_builder_matching=True` |
+| Charlotte, NC | Mecklenburg County's own `TaxParcel_camadata` ArcGIS Feature Service -- live, owner+value+address | Mecklenburg County's own `BuildingPermits` ArcGIS Feature Service -- live, countywide |
+| Phoenix Metro, AZ | Maricopa County Assessor's `Parcel` MapServer layer -- live, owner+value+address, has direct lat/lon fields | City of Mesa's "Building Permits" Socrata dataset -- live; scoped to Mesa only, the only confirmed-free source with real builder names in the county |
+| Nashville, TN | Metro Nashville's `Parcels` ArcGIS layer -- live, owner+value+address | Metro Nashville's `Building_Permits_Issued_2` ArcGIS Feature Service -- live, countywide |
+| Raleigh, NC | Wake County's `Parcels` ArcGIS layer -- live, owner+value+address | City of Raleigh's `Building_Permits` ArcGIS Feature Service -- live; scoped to Raleigh only (Wake County's own permits layer has null contractor fields) |
 
 **Pattern that worked repeatedly when hunting for these:** a live ArcGIS
 REST/Feature Service with owner+value fields beats a bulk-download page or
@@ -111,22 +146,31 @@ PDF/scraping-based sources without the same check-in.
 
 ## Files
 
-- `markets.py` -- registry of the 4 target markets: real county/state, real
-  zip/city/area triples (mock-data flavor only), mock builder names, mock
-  zoning vocabulary, and the real land/permit/GIS sources above.
+- `markets.py` -- registry of the 10 target markets: real county/state, real
+  zip/city/area triples (mock-data flavor only for the original markets),
+  mock builder names, mock zoning vocabulary, and the real land/permit/GIS
+  sources above.
 - `gis_land_sources.py` -- live land-lead loaders, keyed by market in
-  `LIVE_LAND_LOADERS`.
+  `LIVE_LAND_LOADERS`. Also home to `NON_INDIVIDUAL_OWNER_PATTERNS` (the
+  individual-owner-only filter, used by every market that needs it).
 - `live_permit_sources.py` -- live permit loaders, keyed by market in
   `LIVE_PERMIT_LOADERS`.
+- `flood_wetlands.py` -- added 2026-06-25, real (not mocked) flood-zone and
+  wetlands lookups via FEMA's National Flood Hazard Layer and USFWS's
+  National Wetlands Inventory, both free nationwide federal ArcGIS services.
+  Used as a hard filter by the 4 `full_lead_quality_filter=True` markets.
 - `land_data.py` -- PropStream-shaped land lead CSV loader + mock generator,
   per market.
 - `permits_data.py` -- permit CSV loader + mock generator per market,
   aggregates permits into builder buyer-candidate profiles (active zips,
   permit count, recency, construction-value range when known). Builders
   need 2+ permits to count as a candidate (`MIN_PERMITS_FOR_BUYER_CANDIDATE`).
-- `enrichment.py` -- zoning/flood/wetland lookups (mocked); zoning
-  vocabulary is per-market, flood zone codes (X/AE/A) are FEMA's national
-  standard so that part is market-agnostic by design.
+- `enrichment.py` -- zoning/flood/wetland lookups (mocked, still used as-is
+  for the original 6 markets); zoning vocabulary is per-market, flood zone
+  codes (X/AE/A) are FEMA's national standard so that part is market-
+  agnostic by design. The 4 newest markets use real data instead, via
+  `flood_wetlands.py`, applied as a filter inside their land loaders rather
+  than through this module.
 - `matcher.py` -- matches leads to builders by zip overlap within the same
   market run, ranked by builder activity (permit count, recency).
 - `pitch.py` -- drafts a buyer pitch message per match via the Anthropic

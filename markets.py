@@ -28,6 +28,8 @@ STATE_NAMES = {
     "TX": "Texas",
     "GA": "Georgia",
     "TN": "Tennessee",
+    "NC": "North Carolina",
+    "AZ": "Arizona",
 }
 
 
@@ -60,6 +62,13 @@ class Market:
     # emailer.py renders these as a bare-facts property card instead of the
     # usual matched-buyer pitch+contract card.
     skip_builder_matching: bool = False
+    # True for markets whose land loader applies the full lead-quality filter
+    # stack added 2026-06-25 (Mecklenburg/Maricopa/Davidson/Wake): individual
+    # owner only, vacant only, real street number required, FEMA Zone X only
+    # (unshaded), no NWI wetlands. Older markets keep their original filters
+    # (no flood/wetlands filtering -- that enrichment is still mock for them)
+    # unless/until asked to upgrade.
+    full_lead_quality_filter: bool = False
 
 
 TRAVIS_TX = Market(
@@ -425,7 +434,307 @@ ATASCOSA_TX = Market(
     skip_builder_matching=True,
 )
 
-MARKETS = [TRAVIS_TX, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN, MEDINA_TX, ATASCOSA_TX]
+MECKLENBURG_NC = Market(
+    key="MECKLENBURG_NC",
+    label="Charlotte, NC (Mecklenburg County)",
+    county="Mecklenburg",
+    state="NC",
+    # Added 2026-06-25 -- full lead-quality filter stack (individual owner,
+    # vacant, real address, Zone X/no wetlands). Both land and permits are
+    # fully real and county-wide.
+    zips=[
+        ("28202", "Charlotte", "Uptown/Center City"),
+        ("28203", "Charlotte", "South End/Dilworth"),
+        ("28269", "Charlotte", "University City/North Charlotte"),
+        ("28278", "Charlotte", "Steele Creek"),
+        ("28213", "Charlotte", "East Charlotte/Eastfield"),
+        ("28078", "Huntersville", "Huntersville"),
+        ("28031", "Cornelius", "Cornelius/Lake Norman"),
+        ("28036", "Davidson", "Davidson"),
+        ("28105", "Matthews", "Matthews"),
+        ("28227", "Mint Hill", "Mint Hill"),
+        ("28134", "Pineville", "Pineville"),
+    ],
+    builder_names=[
+        "Queen City Custom Homes", "Lake Norman Builders LLC", "South End Infill Homes",
+        "Steele Creek Construction Group", "Uptown Premier Builders", "Matthews Custom Homes",
+        "Cornelius Lakeside Builders", "Mint Hill Construction Co", "Davidson Heritage Homes",
+        "Charlotte Premier Construction",
+    ],
+    zoning_codes=["R-3", "R-4", "R-5", "R-8", "UR-1"],
+    permit_source=(
+        "LIVE AND WIRED UP (2026-06-25): Mecklenburg County's own "
+        "'BuildingPermits' ArcGIS Feature Service (meckgis.mecklenburgcountync.gov/"
+        "server/rest/services/BuildingPermits/FeatureServer/0) -- free, no login, "
+        "countywide (not city-of-Charlotte-only). Filters permittype='One/Two "
+        "Family' AND permitdesc LIKE '%SF Dwelling Detached%' -- worktype='New' "
+        "alone is too broad and catches sheds/decks/garages. 'ownname' acts as "
+        "the builder/developer field for new spec-home construction (no separate "
+        "explicit contractor-name field, but functions as one here). Confirmed "
+        "real, current builders (issued into June 2026): Northway Homes 2025 LLC, "
+        "TRUE HOMES USA, EASTWOOD CONSTRUCTION, CalAtlantic Group/Lennar, "
+        "Northwood Ravin. projadd has inconsistent whitespace padding -- stripped "
+        "in the loader."
+    ),
+    gis_source=(
+        "Same meckgis.mecklenburgcountync.gov ArcGIS Server as land_source/"
+        "permit_source above -- Mecklenburg County's GIS hosts parcels, "
+        "permits, and (per the county's open data catalog) zoning/floodplain "
+        "layers under the same server. Flood/wetlands filtering for this "
+        "market uses the nationwide FEMA NFHL/USFWS NWI services in "
+        "flood_wetlands.py instead of a county-specific layer, for consistency "
+        "with the other 3 new markets."
+    ),
+    permit_source_is_free=True,
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-25): Mecklenburg County's 'TaxParcel_camadata' "
+        "ArcGIS Feature Service (meckgis.mecklenburgcountync.gov/server/rest/"
+        "services/TaxParcel_camadata/FeatureServer/0) -- free, no login. Has "
+        "separate street-number/street-name fields (a sibling layer, "
+        "TaxParcel_Camaownershipvalues, only has a single concatenated situs "
+        "string -- avoid it). Filters vacorimprov='VAC' AND totalbldgval<=0 -- "
+        "vacorimprov alone is NOT reliable: confirmed live 9,720 of 26,035 "
+        "'VAC'-coded parcels (37%) actually carry a positive building value, "
+        "including one with a $1.18M improvement still coded vacant. "
+        "Government-owned parcels (CITY OF/COUNTY) and non-buildable land-use "
+        "descriptions (common areas, ROW slivers, wasteland/gullies) are also "
+        "excluded. zipcode mixes 5-digit and ZIP+4 formats -- normalized in "
+        "the loader."
+    ),
+    full_lead_quality_filter=True,
+)
+
+MARICOPA_AZ = Market(
+    key="MARICOPA_AZ",
+    label="Phoenix Metro, AZ (Mesa/Maricopa County)",
+    county="Maricopa",
+    state="AZ",
+    # Added 2026-06-25. Land data covers all of Maricopa County, but the
+    # only confirmed-free permit source with a real builder-name field is
+    # the City of Mesa's own dataset -- City of Phoenix's permit layers have
+    # no clean new-SFR isolation and Gilbert's has no contractor field at
+    # all. Scoped to Mesa zips only so both sides of every match are real,
+    # same pattern as Austin/Travis being scoped to Austin city zips rather
+    # than all of Travis County.
+    zips=[
+        ("85201", "Mesa", "Downtown Mesa"),
+        ("85202", "Mesa", "West Mesa"),
+        ("85203", "Mesa", "North Mesa"),
+        ("85204", "Mesa", "Mesa"),
+        ("85205", "Mesa", "East Mesa"),
+        ("85206", "Mesa", "East Mesa"),
+        ("85207", "Mesa", "East Mesa"),
+        ("85208", "Mesa", "East Mesa"),
+        ("85209", "Mesa", "Mesa"),
+        ("85210", "Mesa", "South Mesa"),
+        ("85212", "Mesa", "Eastmark/Southeast Mesa"),
+        ("85213", "Mesa", "East Mesa"),
+    ],
+    builder_names=[
+        "Sonoran Custom Homes", "Eastmark Builders LLC", "Red Mountain Construction Group",
+        "Superstition Premier Homes", "Desert Sky Builders Inc", "Val Vista Custom Homes",
+        "East Mesa Construction Co", "Falcon Field Builders", "Riverview Premier Homes",
+        "Mesa Heritage Construction",
+    ],
+    zoning_codes=["RS-7", "RS-9", "RS-15", "R1-6", "R1-9"],
+    permit_source=(
+        "LIVE AND WIRED UP (2026-06-25): City of Mesa's 'Building Permits' "
+        "Socrata dataset (data.mesaaz.gov/resource/dzpk-hxfb.json) -- free, no "
+        "login, live-updated daily (confirmed permits issued the same day as "
+        "the research session). Filters type_of_work='Single Family (Detached)' "
+        "AND status='Issued'. Has a real contractor_name field (unlike Phoenix's "
+        "or Gilbert's permit layers). Confirmed real, current builders: Brighton "
+        "Homes LLC, Taylor Morrison, Pulte, Meritage, Lennar, Shea Homes. An "
+        "older/retired Mesa Socrata resource ID (2gkz-7z4f) is dead-ended at Feb "
+        "2018 -- don't use it. City of Phoenix's own permit data has no clean "
+        "new-SFR isolation (its CSV is annual aggregates only, its ArcGIS "
+        "Permits layer is dominated by sub-trade permits); Gilbert's ArcGIS "
+        "permit table (maps.gilbertaz.gov, EnergovPermitData) is current but has "
+        "NO contractor/builder field at all, only a subdivision project name -- "
+        "checked both, neither is usable for buyer discovery, hence the Mesa-only "
+        "market scope."
+    ),
+    gis_source=(
+        "gis.maricopa.gov (county) and Mesa's own GIS for zoning; flood/wetlands "
+        "filtering for this market uses the nationwide FEMA NFHL/USFWS NWI "
+        "services in flood_wetlands.py instead."
+    ),
+    permit_source_is_free=True,
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-25): Maricopa County Assessor's 'Parcel' "
+        "layer (gis.maricopa.gov/arcgis/rest/services/IndividualService/Parcel/"
+        "MapServer/1) -- free, no login, 1.76M parcels countywide, scoped to "
+        "Mesa zips here. Has dedicated Longitude_DD/Latitude_DD fields already "
+        "in decimal degrees (no Web Mercator conversion needed for the flood/"
+        "wetlands filter). Filters PropertyUseCode IN ('0011','0012') (Vacant "
+        "Residential Urban Subdivided/Non-Subdivided) AND ImprovementFullCashValue"
+        "<=0 -- confirmed live this combination is needed (the use-code alone "
+        "isn't sufficient cross-check, same lesson as every other market). "
+        "Government/municipal-owned vacant parcels (codes 9400/9405/9700/9705) "
+        "excluded. The Assessor's documented token-auth REST API "
+        "(mcassessor.maricopa.gov) requires manual registration -- not used; "
+        "the anonymous MapServer above needs no auth and has everything required."
+    ),
+    full_lead_quality_filter=True,
+)
+
+DAVIDSON_TN = Market(
+    key="DAVIDSON_TN",
+    label="Nashville, TN (Davidson County)",
+    county="Davidson",
+    state="TN",
+    # Added 2026-06-25 -- Nashville PROPER (consolidated Metro government),
+    # distinct from Williamson County (Nashville suburbs, skipped market --
+    # no confirmed free permit source there). Both land and permits are
+    # fully real and county-wide here.
+    zips=[
+        ("37013", "Antioch", "Antioch"),
+        ("37207", "Nashville", "North Nashville"),
+        ("37208", "Nashville", "North Nashville/Germantown"),
+        ("37206", "Nashville", "East Nashville"),
+        ("37076", "Hermitage", "Hermitage"),
+        ("37115", "Madison", "Madison"),
+        ("37214", "Nashville", "Donelson"),
+        ("37221", "Nashville", "Bellevue"),
+        ("37138", "Old Hickory", "Old Hickory"),
+        ("37211", "Nashville", "South Nashville/Antioch border"),
+        ("37189", "Whites Creek", "Whites Creek"),
+        ("37072", "Goodlettsville", "Goodlettsville (Davidson portion)"),
+    ],
+    builder_names=[
+        "Music City Custom Homes", "East Nashville Infill Builders", "Antioch Premier Homes LLC",
+        "Donelson Construction Group", "Hermitage Heritage Homes", "Bellevue Custom Builders",
+        "Madison Premier Construction", "Old Hickory Builders Inc", "Germantown Infill Homes",
+        "Nashville Metro Construction",
+    ],
+    zoning_codes=["RS5", "RS7.5", "RS10", "RS15", "R6"],
+    permit_source=(
+        "LIVE AND WIRED UP (2026-06-25): Metro Nashville's "
+        "'Building_Permits_Issued_2' ArcGIS Feature Service "
+        "(services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/"
+        "Building_Permits_Issued_2/FeatureServer/0) -- free, no login. "
+        "data.nashville.gov's classic Socrata portal is defunct (redirects to "
+        "an 'ArcGIS Hub Unsupported' page) -- Nashville migrated permits to "
+        "ArcGIS Online under org HdTo6HJqh92wn4D8. Filters "
+        "Permit_Type_Description='Building Residential - New' AND "
+        "Permit_Subtype_Description='Single Family Residence'. The 'Contact' "
+        "field is the builder name but format is inconsistent (some "
+        "last-name-first, e.g. 'HORTON, D R INC' for D.R. Horton) -- match with "
+        "LIKE '%HORTON%' not the full company name. Confirmed real, current "
+        "builders (issued into June 2026): Meritage Homes of Tennessee Inc, "
+        "Regent Homes, Goodall Homes, Beazer Homes LLC, Ole South Properties "
+        "Inc, NVR/Ryan Homes, Lennar Homes of Tennessee LLC."
+    ),
+    gis_source=(
+        "maps.nashville.gov (Metro Nashville's own GIS) hosts parcels/zoning; "
+        "flood/wetlands filtering for this market uses the nationwide FEMA "
+        "NFHL/USFWS NWI services in flood_wetlands.py instead."
+    ),
+    permit_source_is_free=True,
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-25): Metro Nashville's 'Parcels' layer "
+        "(maps.nashville.gov/arcgis/rest/services/Cadastral/Parcels/MapServer/0, "
+        "also hosted at services2.arcgis.com/HdTo6HJqh92wn4D8/.../Parcels_view, "
+        "updated daily) -- free, no login. Filters LUCode IN ('010','020','030',"
+        "'070','080','80M','090') (vacant residential/commercial/multi-family/"
+        "industrial/rural/exempt) AND ImprAppr<=0 -- confirmed live 16% of "
+        "LUCode='010' (vacant residential) parcels actually carry a positive "
+        "improvement value, same lesson as every other market in this project. "
+        "PropHouse (street number) is a real separate field. No sale-price field "
+        "issue here -- LandAppr/ImprAppr/TotlAppr are all populated and split "
+        "cleanly."
+    ),
+    full_lead_quality_filter=True,
+)
+
+WAKE_NC = Market(
+    key="WAKE_NC",
+    label="Raleigh, NC (Wake County)",
+    county="Wake",
+    state="NC",
+    # Added 2026-06-25 -- promoted from CANDIDATE_MARKETS (see below) after
+    # live verification. Land data covers all of Wake County, but the only
+    # confirmed-free permit source with real builder names is the City of
+    # Raleigh's own open data -- Wake County's own permits layer has null
+    # contractor/issue-date fields on every record, and no other town in the
+    # county (Cary, Apex, Wake Forest, Garner, Fuquay-Varina, Holly Springs,
+    # Knightdale, Morrisville) publishes permit data at all. Scoped to
+    # Raleigh zips only so both sides of every match are real, same pattern
+    # as Austin/Travis and Mesa/Maricopa above.
+    zips=[
+        ("27601", "Raleigh", "Downtown Raleigh"),
+        ("27610", "Raleigh", "Southeast Raleigh"),
+        ("27616", "Raleigh", "North Raleigh"),
+        ("27613", "Raleigh", "Northwest Raleigh"),
+        ("27604", "Raleigh", "North Raleigh/Capital Blvd"),
+        ("27606", "Raleigh", "West Raleigh/NCSU"),
+        ("27607", "Raleigh", "West Raleigh/Cameron Village"),
+        ("27609", "Raleigh", "North Raleigh/Six Forks"),
+        ("27612", "Raleigh", "West Raleigh/Brier Creek"),
+        ("27615", "Raleigh", "North Raleigh"),
+        ("27603", "Raleigh", "South Raleigh"),
+    ],
+    builder_names=[
+        "Oak City Custom Homes", "North Raleigh Builders LLC", "Cameron Village Infill Homes",
+        "Brier Creek Construction Group", "Six Forks Premier Builders", "Southeast Raleigh Custom Homes",
+        "NCSU Area Infill Builders", "Capital Blvd Construction Co", "Downtown Raleigh Builders Inc",
+        "Raleigh Premier Construction",
+    ],
+    zoning_codes=["R-1", "R-2", "R-4", "R-6", "R-10"],
+    permit_source=(
+        "LIVE AND WIRED UP (2026-06-25): City of Raleigh's 'Building_Permits' "
+        "ArcGIS Feature Service (services.arcgis.com/v400IkDOw1ad7Yad/arcgis/"
+        "rest/services/Building_Permits/FeatureServer/0, siblings: "
+        "Building_Permits_Past_31_Days/Issued_Past_180_Days/Pending/"
+        "ADU_Building_Permits) -- free, no login, data current (most recent "
+        "record issued the day before the research session). Filters "
+        "workclassmapped='New' AND proposeduse LIKE '%SINGLE FAMILY%'. Has a "
+        "real contractorcompanyname field. Confirmed real, current builders: "
+        "Lennar Carolinas LLC, M/I Homes, Smith Douglas Homes, Davidson Homes, "
+        "McKee Homes, Pulte. Wake County's OWN 'Building_Permits' layer "
+        "(maps.wake.gov/arcgis/rest/services/Inspections/Building_Permits/"
+        "MapServer/0, 195K records) exists but its CONTRACTOR and ISSUE_DATE "
+        "fields are null on every record sampled -- explicitly described by the "
+        "county as legacy/incomplete data, not usable. proposeduse/streettype "
+        "strings have inconsistent leading whitespace/tabs -- stripped in the "
+        "loader. jurisdiction is 100% Raleigh's FIPS place code across this "
+        "whole feed -- it is Raleigh-city-only, hence the Raleigh-only zip scope. "
+        "Honest caveat confirmed live 2026-06-25: genuinely NEW new-single-"
+        "family-on-an-individually-owned-lot activity is thin right now -- "
+        "only 4 of 100 sampled vacant Raleigh parcels were individually owned "
+        "(most buildable infill is already builder/LLC-controlled), and the "
+        "permit feed's last-31-days layer had only one new-SFH permit "
+        "citywide (with no contractor name on it). Matches found will likely "
+        "skew toward older (sometimes years-old) permit history rather than "
+        "this week's activity -- expect low volume here, by the nature of "
+        "this specific market right now, not a bug."
+    ),
+    gis_source=(
+        "maps.wake.gov (Wake County's own GIS, also mirrored at "
+        "maps.wakegov.com) hosts parcels/zoning; flood/wetlands filtering for "
+        "this market uses the nationwide FEMA NFHL/USFWS NWI services in "
+        "flood_wetlands.py instead."
+    ),
+    permit_source_is_free=True,
+    land_source=(
+        "LIVE AND WIRED UP (2026-06-25): Wake County's 'Parcels' layer "
+        "(maps.wake.gov/arcgis/rest/services/Property/Parcels/MapServer/0) -- "
+        "free, no login, countywide, scoped to Raleigh zips here. Filters "
+        "LAND_CLASS='VAC' AND BLDG_VAL<=0. STNUM is a real numeric street-number "
+        "field. ADDR2 (owner mailing) is an unparsed 'CITY ST ZIP' string, not "
+        "separate fields -- parsed via regex in the loader. ZIPNUM (situs zip) "
+        "is null on ~7% of vacant parcels -- those are skipped rather than "
+        "guessed. BILLCLASS field distinguishes Individual vs Business owners "
+        "directly (a useful cross-check alongside the project's own "
+        "NON_INDIVIDUAL_OWNER_PATTERNS name-based filter)."
+    ),
+    full_lead_quality_filter=True,
+)
+
+MARKETS = [
+    TRAVIS_TX, BEXAR_TX, GWINNETT_GA, WILLIAMSON_TN, MEDINA_TX, ATASCOSA_TX,
+    MECKLENBURG_NC, MARICOPA_AZ, DAVIDSON_TN, WAKE_NC,
+]
 
 
 @dataclass
@@ -445,39 +754,9 @@ class CandidateMarket:
 
 
 CANDIDATE_MARKETS = [
-    CandidateMarket(
-        label="Raleigh, NC (Wake County)",
-        county="Wake",
-        state="NC",
-        permit_source=(
-            "Wake County Open Data (data-wake.opendata.arcgis.com / data.wake.gov) -- "
-            "ArcGIS Hub, free, has a 'Building Permits' dataset (also mirrored at "
-            "data.raleighnc.gov) downloadable as CSV/GeoJSON."
-        ),
-        gis_source=(
-            "iMAPS (maps.raleighnc.gov/iMAPS), the joint Raleigh/Wake County GIS viewer "
-            "-- free, includes Property/Tax Parcels, Zoning, and flood-related layers. "
-            "Same data also in the Wake County Open Data Portal above."
-        ),
-        permit_source_is_free=True,
-        note="Clean ArcGIS Hub CSV like Gwinnett's GIS data, but for permits too -- no PDF-parsing needed.",
-    ),
-    CandidateMarket(
-        label="Charlotte, NC (Mecklenburg County)",
-        county="Mecklenburg",
-        state="NC",
-        permit_source=(
-            "Mecklenburg County Code Enforcement publishes 'Building Permits Issued "
-            "Daily' via a public Power BI report (Mecklenburg Open Data), free but not "
-            "a one-click CSV -- same caveat tier as Gwinnett's PDF reports. County is "
-            "also mid-migration to Accela (WebPermit) for permit search/applications."
-        ),
-        gis_source=(
-            "Mecklenburg County GIS / POLARIS 3G (polaris3g.mecklenburgcountync.gov) -- "
-            "free, explicitly has zoning and floodplain overlays. GeoPortal "
-            "(mcmap.org/geoportal) for parcel/address lookup."
-        ),
-        permit_source_is_free=True,
-        note="Free but the permit export format needs more legwork than Austin/Wake before it's truly wire-up-ready.",
-    ),
+    # Wake/Raleigh and Mecklenburg/Charlotte promoted to active Markets above
+    # on 2026-06-25, both fully real on both sides after live verification --
+    # removed from this backup-suggestion pool. No researched backups remain
+    # at the moment; the low-inventory alert in emailer.py just shows no
+    # suggestions until new candidates are researched and added here.
 ]
