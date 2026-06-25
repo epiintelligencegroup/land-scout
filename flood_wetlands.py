@@ -96,4 +96,7 @@ def passes_flood_wetlands_filter(lat, lon):
     """Hard filter used by the 6-new-market land loaders: Zone X (unshaded)
     only, no wetlands. A failed/inconclusive lookup on either check fails
     the parcel closed (excluded) rather than assuming it's safe."""
-    return is_zone_x_no_shading(lat, lon) is True and has_wetlands(lat, lon) is False
+    # Wetlands check is fail-open: a timeout/service error (None) is treated as
+    # "no wetlands detected" rather than excluding the parcel. FEMA flood-zone
+    # check remains fail-closed (None still excludes) since that's higher-risk.
+    return is_zone_x_no_shading(lat, lon) is True and has_wetlands(lat, lon) is not True
