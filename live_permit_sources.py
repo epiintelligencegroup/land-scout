@@ -6,13 +6,94 @@ Davidson/Nashville TN, Wake/Raleigh NC.
 run.py tries, per market: real CSV override -> a registered live loader
 here -> mock. Same priority chain as gis_land_sources.py's land loaders.
 """
+import csv
 import datetime
+import http.client
+import io
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from permits_data import Permit
+
+
+SA_PERMITS_URL = (
+    "https://data.sanantonio.gov/dataset/05012dcb-ba1b-4ade-b5f3-7403bc7f52eb/"
+    "resource/c21106f9-3ef5-4f3a-8604-f992b4db7512/download/permits_issued.csv"
+)
+SA_NEW_CONSTRUCTION_PERMIT_TYPE = "Res New Building Permit"
+
+
+def _extract_zip(address):
+    token = address.strip().split()[-1] if address.strip() else ""
+    return token if token.isdigit() and len(token) == 5 else None
+
+
+def _http_get(url, headers):
+    parsed = urllib.parse.urlparse(url)
+    conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=60)
+    path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    conn.request("GET", path, headers=headers)
+    return conn, conn.getresponse()
+
+
+def _fetch_following_redirect(url, headers):
+    """Uses http.client directly -- urllib.request re-encodes presigned S3
+    redirect URLs enough to break AWS SigV4 signature checks (confirmed live)."""
+    conn, resp = _http_get(url, headers)
+    if resp.status in (301, 302, 303, 307, 308):
+        location = resp.getheader("Location")
+        resp.read()
+        conn.close()
+        if not location:
+            raise RuntimeError(f"Redirect from {url} had no Location header")
+        conn, resp = _http_get(location, headers)
+    if resp.status != 200:
+        body = resp.read(500)
+        conn.close()
+        raise RuntimeError(f"GET {url} failed: {resp.status} {body!r}")
+    return conn, resp
+
+
+def fetch_san_antonio_permits(market, limit=None):
+    """Streams City of San Antonio's public 'permits_issued.csv' (~22MB, free,
+    no login) and keeps only new-construction permits in market.zips.
+    DECLARED VALUATION is blank on every row of this type -- construction_value
+    comes back as None ('unknown'), not $0.
+    """
+    zips = {z for z, _city, _area in market.zips}
+    conn, resp = _fetch_following_redirect(SA_PERMITS_URL, {"User-Agent": "curl/8.4.0"})
+
+    permits = []
+    try:
+        reader = csv.DictReader(io.TextIOWrapper(resp, encoding="utf-8", errors="replace"))
+        for row in reader:
+            if row.get("PERMIT TYPE") != SA_NEW_CONSTRUCTION_PERMIT_TYPE:
+                continue
+            address = row.get("ADDRESS") or ""
+            zip_code = _extract_zip(address)
+            if zip_code not in zips:
+                continue
+            contractor_name = (row.get("PRIMARY CONTACT") or "").strip()
+            permit_number = (row.get("PERMIT #") or "").strip()
+            if not contractor_name or not permit_number:
+                continue
+            valuation = (row.get("DECLARED VALUATION") or "").strip()
+            permits.append(Permit(
+                permit_number=permit_number,
+                contractor_name=contractor_name,
+                property_address=address,
+                zip=zip_code,
+                permit_type=SA_NEW_CONSTRUCTION_PERMIT_TYPE,
+                issue_date=row.get("DATE ISSUED") or "",
+                construction_value=float(valuation) if valuation else None,
+            ))
+            if limit and len(permits) >= limit:
+                break
+    finally:
+        conn.close()
+    return permits
 
 
 def _get_json(url, timeout=30):
@@ -322,6 +403,6 @@ def fetch_raleigh_permits(market, limit=None):
 LIVE_PERMIT_LOADERS = {
     "MECKLENBURG_NC": fetch_mecklenburg_permits,
     "MARICOPA_AZ": fetch_mesa_permits,
-    "DAVIDSON_TN": fetch_nashville_permits,
+    "BEXAR_TX": fetch_san_antonio_permits,
     "WAKE_NC": fetch_raleigh_permits,
 }

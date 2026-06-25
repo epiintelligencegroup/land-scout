@@ -24,6 +24,7 @@ the Market record itself doesn't need to change.
 from dataclasses import dataclass
 
 STATE_NAMES = {
+    "TX": "Texas",
     "TN": "Tennessee",
     "NC": "North Carolina",
     "AZ": "Arizona",
@@ -212,6 +213,55 @@ MARICOPA_AZ = Market(
     full_lead_quality_filter=True,
 )
 
+BEXAR_TX = Market(
+    key="BEXAR_TX",
+    label="San Antonio, TX (Bexar County)",
+    county="Bexar",
+    state="TX",
+    zips=[
+        ("78201", "San Antonio", "Five Points/Beacon Hill"),
+        ("78207", "San Antonio", "West Side"),
+        ("78211", "San Antonio", "Highland Park"),
+        ("78228", "San Antonio", "Las Palmas/West Side"),
+        ("78237", "San Antonio", "West Side"),
+        ("78242", "San Antonio", "Southwest Side"),
+        ("78244", "San Antonio", "East Side"),
+        ("78245", "San Antonio", "Southwest San Antonio"),
+        ("78253", "San Antonio", "Far West Side"),
+        ("78254", "San Antonio", "Alamo Ranch"),
+        ("78258", "San Antonio", "Stone Oak"),
+    ],
+    builder_names=[
+        "Alamo Heights Builders", "Stone Oak Custom Homes LLC", "Riverwalk Construction Group",
+        "South Texas Infill Homes", "Helotes Creek Builders", "Live Oak Premier Homes",
+        "Northside Construction Group", "Alamo Ranch Builders Inc", "Hill Country Home Builders",
+        "Bexar Premier Construction",
+    ],
+    zoning_codes=["R-20", "R-6", "R-5", "R-4", "RM-4"],
+    permit_source=(
+        "LIVE AND WIRED UP: City of San Antonio Open Data SA -- "
+        "'permits_issued.csv' (data.sanantonio.gov, CKAN/S3-hosted, ~22MB, free, no "
+        "login). live_permit_sources.py streams it and keeps 'Res New Building Permit' "
+        "rows in market.zips -- confirmed real builders (CHESMAR HOMES, LENNAR HOMES, "
+        "Habitat for Humanity of San Antonio, etc). DECLARED VALUATION is blank on every "
+        "row of this permit type in the feed -- construction_value comes back as None "
+        "('unknown'), not $0; matcher.py omits the value-range claim when that's the case."
+    ),
+    gis_source=(
+        "Bexar County Open Data Portal (gis-bexar.opendata.arcgis.com), ArcGIS Hub -- "
+        "free, parcel/zoning layers; also Bexar County Appraisal District GIS. "
+        "Flood: San Antonio River Authority Floodplain Viewer (FEMA NFHL-based)."
+    ),
+    permit_source_is_free=True,
+    land_source=(
+        "LIVE AND WIRED UP: Bexar County GIS Parcels ArcGIS REST layer "
+        "(maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0) -- free, queryable, "
+        "no login. Filters on State_cd='C1' (Texas Comptroller vacant lots classification) "
+        "plus Houses='0' and ImprVal<=0. Has owner name/mailing address/situs address/"
+        "land value/acreage. No sale-history fields -- those come back as 'unknown'."
+    ),
+)
+
 DAVIDSON_TN = Market(
     key="DAVIDSON_TN",
     label="Nashville, TN (Davidson County)",
@@ -366,7 +416,7 @@ WAKE_NC = Market(
 )
 
 MARKETS = [
-    MECKLENBURG_NC, MARICOPA_AZ, DAVIDSON_TN, WAKE_NC,
+    MECKLENBURG_NC, MARICOPA_AZ, BEXAR_TX, WAKE_NC,
 ]
 
 

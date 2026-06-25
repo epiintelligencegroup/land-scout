@@ -52,6 +52,88 @@ _NON_INDIVIDUAL_OWNER_RE = re.compile(
 def _is_non_individual_owner(name):
     return bool(_NON_INDIVIDUAL_OWNER_RE.search(name))
 
+BEXAR_PARCELS_URL = "https://maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0/query"
+BEXAR_VACANT_LAND_STATE_CD = "C1"
+BEXAR_MAX_ACRES = 2.0
+
+
+def _clean(value):
+    """BCAD's feed uses the literal string "NULL" for empty fields."""
+    value = (value or "").strip()
+    return "" if value.upper() == "NULL" else value
+
+
+def fetch_bexar_vacant_land_leads(market, limit=12):
+    """Live query against Bexar County's public ArcGIS REST Parcels layer.
+    ImprVal<=0 added as a secondary guard: Houses='0' alone is stale on
+    confirmed-live parcels with fence/septic improvement value.
+    No sale-history fields on this layer -- those come back as 'unknown'.
+    """
+    zips = [z for z, _city, _area in market.zips]
+    where = (
+        f"State_cd='{BEXAR_VACANT_LAND_STATE_CD}' AND Houses='0' AND ImprVal<=0 "
+        f"AND LglAcres<={BEXAR_MAX_ACRES} "
+        f"AND Zip IN ({','.join(repr(z) for z in zips)})"
+    )
+    params = {
+        "where": where,
+        "outFields": "Situs,Owner,AddrLn1,AddrLn2,AddrCity,AddrSt,Zip,LandVal,TotVal,LglAcres,Acres,AcctNumb",
+        "resultRecordCount": limit,
+        "returnGeometry": "false",
+        "f": "json",
+    }
+    url = f"{BEXAR_PARCELS_URL}?{urllib.parse.urlencode(params)}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Bexar GIS query failed: {e}")
+    if "error" in data:
+        raise RuntimeError(f"Bexar GIS query failed: {data['error']}")
+
+    leads = []
+    for feature in data.get("features", []):
+        attrs = feature["attributes"]
+        situs = (attrs.get("Situs") or "").strip()
+        owner_name = (attrs.get("Owner") or "").strip()
+        zip_code = (attrs.get("Zip") or "").strip()[:5]
+        acreage = attrs.get("LglAcres") or attrs.get("Acres") or 0.0
+        if not situs or not owner_name or not zip_code or acreage <= 0:
+            continue
+
+        addr_lines = [_clean(attrs.get("AddrLn1")), _clean(attrs.get("AddrLn2")), _clean(attrs.get("AddrLn3"))]
+        owner_street = ", ".join(line for line in addr_lines if line)
+        owner_mailing_address = (
+            f"{owner_street}, {_clean(attrs.get('AddrCity'))}, "
+            f"{_clean(attrs.get('AddrSt'))} {zip_code}"
+        )
+        owner_occupied = bool(owner_street) and situs.split()[0] in owner_street
+
+        land_val = attrs.get("LandVal") or 0.0
+        tot_val = attrs.get("TotVal") or land_val
+
+        leads.append(LandLead(
+            apn=str(attrs.get("AcctNumb") or ""),
+            owner_name=owner_name,
+            owner_mailing_address=owner_mailing_address,
+            property_address=situs,
+            city="San Antonio",
+            state=market.state,
+            zip=zip_code,
+            county=market.county,
+            land_use="Vacant Land",
+            acreage=acreage,
+            assessed_value=land_val,
+            estimated_value=tot_val,
+            last_sale_price=None,
+            last_sale_date="unknown",
+            years_owned=None,
+            owner_occupied=owner_occupied,
+            tax_delinquent=False,
+        ))
+    return leads
+
+
 def _get_json(url, timeout=30):
     """Plain GET with a spoofed User-Agent -- some government-hosted ArcGIS
     Servers (not Esri's own arcgis.com hosting) 403 on Python's default
@@ -492,6 +574,6 @@ def fetch_wake_vacant_land_leads(market, limit=12):
 LIVE_LAND_LOADERS = {
     "MECKLENBURG_NC": fetch_mecklenburg_vacant_land_leads,
     "MARICOPA_AZ": fetch_maricopa_vacant_land_leads,
-    "DAVIDSON_TN": fetch_davidson_vacant_land_leads,
+    "BEXAR_TX": fetch_bexar_vacant_land_leads,
     "WAKE_NC": fetch_wake_vacant_land_leads,
 }
