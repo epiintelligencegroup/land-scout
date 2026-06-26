@@ -52,6 +52,22 @@ _NON_INDIVIDUAL_OWNER_RE = re.compile(
 def _is_non_individual_owner(name):
     return bool(_NON_INDIVIDUAL_OWNER_RE.search(name))
 
+
+# Commercial/business zoning code patterns -- user's explicit list plus the
+# "starts with C or B" catch-all covers C-1/C-2/B-1/B-2/MX/NS and any
+# variant (CS, CG, BG, etc.). Applied Python-side wherever a zoning field is
+# available in the response; NULL/absent zoning is treated as non-commercial
+# so parcels from layers that don't include a zoning field are not excluded.
+_COMMERCIAL_ZONING_RE = re.compile(r'^[CB]|^MX$|^NS$', re.IGNORECASE)
+
+
+def _is_commercial_zoning(zone_code):
+    """True if zone_code is a commercial or business zoning designation."""
+    if not zone_code:
+        return False
+    return bool(_COMMERCIAL_ZONING_RE.match(zone_code.strip()))
+
+
 BEXAR_PARCELS_URL = "https://maps.bexar.org/arcgis/rest/services/Parcels/MapServer/0/query"
 BEXAR_VACANT_LAND_STATE_CD = "C1"
 BEXAR_MAX_ACRES = 2.0
@@ -65,13 +81,17 @@ def _clean(value):
 
 def fetch_bexar_vacant_land_leads(market, limit=12):
     """Live query against Bexar County's public ArcGIS REST Parcels layer.
-    ImprVal<=0 added as a secondary guard: Houses='0' alone is stale on
-    confirmed-live parcels with fence/septic improvement value.
+    ImprVal=0 (strengthened from <=0): Houses='0' alone is stale on
+    confirmed-live parcels with fence/septic improvement value. =0 (not <=0)
+    rejects any non-zero value. TotVal>LandVal is also checked Python-side to
+    catch improvement value split across a second field ImprVal doesn't cover.
     No sale-history fields on this layer -- those come back as 'unknown'.
+    Note: this layer has no zoning code field -- C-1/C-2 commercial vacant lots
+    cannot be filtered here without a spatial join against a separate zoning layer.
     """
     zips = [z for z, _city, _area in market.zips]
     where = (
-        f"State_cd='{BEXAR_VACANT_LAND_STATE_CD}' AND Houses='0' AND ImprVal<=0 "
+        f"State_cd='{BEXAR_VACANT_LAND_STATE_CD}' AND Houses='0' AND ImprVal=0 "
         f"AND LglAcres<={BEXAR_MAX_ACRES} "
         f"AND Zip IN ({','.join(repr(z) for z in zips)})"
     )
@@ -111,6 +131,10 @@ def fetch_bexar_vacant_land_leads(market, limit=12):
 
         land_val = attrs.get("LandVal") or 0.0
         tot_val = attrs.get("TotVal") or land_val
+        # TotVal should equal LandVal when ImprVal=0; any excess means
+        # improvement value is recorded in a second field ImprVal doesn't cover.
+        if tot_val > land_val:
+            continue
 
         leads.append(LandLead(
             apn=str(attrs.get("AcctNumb") or ""),
@@ -181,8 +205,10 @@ def fetch_mecklenburg_vacant_land_leads(market, limit=12):
     number required, FEMA Zone X (unshaded) only, no NWI wetlands.
     """
     zips = [z for z, _c, _a in market.zips]
+    # lusecode LIKE 'R1%' already restricts to single-family residential codes;
+    # commercial (MX/NS/B/MUDD) and industrial codes are excluded by that prefix.
     where = (
-        f"vacorimprov='VAC' AND totalbldgval<=0 AND totalac<={MECKLENBURG_MAX_ACRES} "
+        f"vacorimprov='VAC' AND totalbldgval=0 AND totalac<={MECKLENBURG_MAX_ACRES} "
         f"AND lusecode LIKE '{MECKLENBURG_RESIDENTIAL_LUSECODE_PREFIX}%' "
         f"AND streetnumber IS NOT NULL "
         f"AND ownrlstnme NOT LIKE '%CITY OF%' AND ownrlstnme NOT LIKE '%COUNTY%' "
@@ -283,8 +309,10 @@ def fetch_maricopa_vacant_land_leads(market, limit=12):
     """
     zips = [z for z, _c, _a in market.zips]
     use_codes = ",".join(repr(c) for c in MARICOPA_VACANT_USE_CODES)
+    # PropertyUseCode 0011/0012 = Vacant Residential Urban only; commercial
+    # vacant (0021/0022/0031) already excluded by the IN filter above.
     where = (
-        f"PropertyUseCode IN ({use_codes}) AND ImprovementFullCashValue<=0 "
+        f"PropertyUseCode IN ({use_codes}) AND ImprovementFullCashValue=0 "
         f"AND LotSize_Acre<={MARICOPA_MAX_ACRES} AND LandFullCashValue>=2000 "
         f"AND PropertyStreetNumber IS NOT NULL "
         f"AND OwnerName NOT LIKE '%CITY OF%' AND OwnerName NOT LIKE '%COUNTY%' "
@@ -377,7 +405,7 @@ DAVIDSON_MAX_ACRES = 2.0
 # such convention here), so all of LUCode 010/020/030/070/080/80M/090 are
 # allowed through and the acreage cap + improvement-value check do the
 # real work of keeping leads in the wholesaling sweet spot.
-DAVIDSON_VACANT_LU_CODES = ("010", "020", "030", "070", "080", "80M", "090")
+DAVIDSON_VACANT_LU_CODES = ("010",)  # 010 = Residential Vacant only; 020/030/080/80M/090 are commercial/multi-family/industrial/exempt vacant codes that caused commercial properties to leak through
 
 
 def fetch_davidson_vacant_land_leads(market, limit=12):
@@ -390,7 +418,7 @@ def fetch_davidson_vacant_land_leads(market, limit=12):
     zips = [z for z, _c, _a in market.zips]
     codes = ",".join(repr(c) for c in DAVIDSON_VACANT_LU_CODES)
     where = (
-        f"LUCode IN ({codes}) AND ImprAppr<=0 AND Acres<={DAVIDSON_MAX_ACRES} AND LandAppr>=2000 "
+        f"LUCode IN ({codes}) AND ImprAppr=0 AND Acres<={DAVIDSON_MAX_ACRES} AND LandAppr>=2000 "
         f"AND PropHouse IS NOT NULL AND PropHouse<>'0' "
         f"AND Owner NOT LIKE '%METRO%' AND Owner NOT LIKE '%CITY OF%' AND Owner NOT LIKE '%COUNTY%' "
         f"AND Owner NOT LIKE '%TOWN OF%' "
@@ -496,7 +524,7 @@ def fetch_wake_vacant_land_leads(market, limit=12):
     zip_to_city = {z: c for z, c, _a in market.zips}
     zips = list(zip_to_city)
     where = (
-        f"LAND_CLASS='VAC' AND BLDG_VAL<=0 AND DEED_ACRES<={WAKE_MAX_ACRES} AND LAND_VAL>=2000 "
+        f"LAND_CLASS='VAC' AND BLDG_VAL=0 AND DEED_ACRES<={WAKE_MAX_ACRES} AND LAND_VAL>=2000 "
         f"AND STNUM IS NOT NULL "
         f"AND OWNER NOT LIKE '%CITY OF%' AND OWNER NOT LIKE '%COUNTY%' AND OWNER NOT LIKE '%TOWN OF%' "
         f"AND ZIPNUM IN ({','.join(repr(z) for z in zips)})"
