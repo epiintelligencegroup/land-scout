@@ -183,36 +183,45 @@ MESA_PERMITS_URL = "https://data.mesaaz.gov/resource/dzpk-hxfb.json"
 MESA_NEW_SF_APPLICATION_PREFIX = "NSFR"
 
 
-CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/geographies/coordinates"
+# Approximate geographic centroids (lon, lat) for each Mesa AZ zip in
+# the MARICOPA_AZ market. Used to assign a permit's job-site lat/lon to
+# the nearest Mesa zip without an external API call per permit.
+# The original approach (Census Geocoder per permit) was confirmed to
+# hang the cloud run: 381 Mesa NSFR permits × ~1.5s per geocoder call
+# = ~9 minutes just for zip lookups, causing the scheduled run to time
+# out before the digest email was ever sent (2026-06-26 missed email).
+# Nearest-centroid assignment is an approximation but close enough for
+# builder-to-zip matching -- a builder's pattern of activity across a
+# general area is what drives the match, not zip-boundary precision.
+_MESA_ZIP_CENTROIDS = {
+    "85201": (-111.828, 33.418),  # Downtown Mesa
+    "85202": (-111.862, 33.387),  # West Mesa / Tempe border
+    "85203": (-111.823, 33.438),  # North Mesa
+    "85204": (-111.809, 33.409),  # Central Mesa
+    "85205": (-111.781, 33.417),  # East Mesa
+    "85206": (-111.757, 33.395),  # East Mesa
+    "85207": (-111.735, 33.422),  # NE Mesa
+    "85208": (-111.724, 33.388),  # SE Mesa
+    "85209": (-111.700, 33.376),  # SE Mesa / Eastmark
+    "85210": (-111.828, 33.385),  # South Mesa
+    "85212": (-111.665, 33.358),  # Far SE Mesa / Eastmark
+    "85213": (-111.764, 33.432),  # NE Mesa
+}
 
 
-def _zip_from_latlon(lat, lon):
-    """Reverse-geocodes a point to its ZIP Code Tabulation Area (ZCTA, the
-    Census Bureau's zip-equivalent) via the free, no-key Census Geocoder.
-    Used for Mesa permits below, which have lat/lon but no property-zip
-    field at all -- confirmed live 2026-06-25 (only contractor_zip exists,
-    the contractor's own mailing zip, not the job site's). A naive fix
-    (placeholder zip for every permit) was tried first and rejected: it
-    would have collapsed every Mesa builder's active_zips to one zip,
-    badly distorting matcher.py's zip-based matching across the rest of
-    Mesa. Cross-referencing the Maricopa Assessor's own parcel layer by
-    APN or by spatial point-lookup was also tried and both came back
-    empty/blank for brand-new subdivision parcels not yet in the
-    assessor's system -- the Census Geocoder works regardless of assessor
-    data lag since it geocodes the raw coordinate, not parcel records.
-    Returns None if the geocoder has no ZCTA at this point (rare).
-    """
-    params = {
-        "x": lon, "y": lat, "benchmark": "Public_AR_Current",
-        "vintage": "Current_Current", "layers": "2", "format": "json",
-    }
-    url = f"{CENSUS_GEOCODER_URL}?{urllib.parse.urlencode(params)}"
-    try:
-        data = _get_json(url, timeout=15)
-    except urllib.error.URLError:
-        return None
-    zctas = data.get("result", {}).get("geographies", {}).get("2020 Census ZIP Code Tabulation Areas", [])
-    return zctas[0]["ZCTA5"] if zctas else None
+def _mesa_zip_nearest(lat, lon, valid_zips):
+    """Assigns a Mesa permit's lat/lon to the nearest Mesa zip centroid.
+    No API call -- instant pure computation. Returns None only if
+    valid_zips is empty (shouldn't happen in practice)."""
+    best_zip, best_dist = None, float("inf")
+    for zip_code, (clon, clat) in _MESA_ZIP_CENTROIDS.items():
+        if zip_code not in valid_zips:
+            continue
+        dist = (lat - clat) ** 2 + (lon - clon) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best_zip = zip_code
+    return best_zip
 
 
 def fetch_mesa_permits(market, limit=None):
@@ -242,6 +251,7 @@ def fetch_mesa_permits(market, limit=None):
     if isinstance(rows, dict):
         raise RuntimeError(f"Mesa permits query failed: {rows}")
 
+    valid_zips = {z for z, _city, _area in market.zips}
     permits = []
     for row in rows:
         contractor_name = (row.get("contractor_name") or "").strip()
@@ -250,7 +260,7 @@ def fetch_mesa_permits(market, limit=None):
         lat, lon = row.get("latitude"), row.get("longitude")
         if not contractor_name or not permit_number or not address or not lat or not lon:
             continue
-        zip_code = _zip_from_latlon(float(lat), float(lon))
+        zip_code = _mesa_zip_nearest(float(lat), float(lon), valid_zips)
         if not zip_code:
             continue
         valuation = row.get("total_valuation")

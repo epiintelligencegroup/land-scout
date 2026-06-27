@@ -598,10 +598,112 @@ def fetch_wake_vacant_land_leads(market, limit=12):
     return leads
 
 
+TAMPA_PARCELS_URL = (
+    "https://arcgis.tampagov.net/arcgis/rest/services/Parcels/VacantParcel/FeatureServer/0/query"
+)
+TAMPA_MAX_ACRES = 2.0
+
+
+def fetch_tampa_vacant_land_leads(market, limit=12):
+    """Live query against City of Tampa's pre-filtered VacantParcel
+    FeatureServer -- free, no login, city-limits only. All returned
+    records have BLDG=0 by construction (the layer is server-side
+    pre-filtered). Geometry returned in WKID 4326 with outSR=4326;
+    centroid averaged for the FEMA NFHL / NWI wetlands check.
+    SITE_ADDR='0' or null means no street address -- excluded.
+    AMT/S_DATE provide sale history (AMT=0 means no sale on record).
+    This market is skip_builder_matching=True (no contractor-name
+    permit source found -- see markets.py's HILLSBOROUGH_FL.permit_source).
+    """
+    zips = [z for z, _c, _a in market.zips]
+    zip_list = ", ".join(repr(z) for z in zips)
+    where = (
+        f"ACREAGE>0 AND ACREAGE<={TAMPA_MAX_ACRES} AND LAND>=2000 "
+        f"AND SITE_ZIP IN ({zip_list}) "
+        f"AND SITE_ADDR IS NOT NULL AND SITE_ADDR<>'0'"
+    )
+    params = {
+        "where": where,
+        "outFields": (
+            "FOLIO,OWNER,ADDR_1,ADDR_2,CITY,STATE,ZIP,"
+            "SITE_ADDR,SITE_CITY,SITE_ZIP,LAND,JUST,AMT,S_DATE,ACREAGE"
+        ),
+        "resultRecordCount": limit * 3,
+        "returnGeometry": "true",
+        "outSR": "4326",
+        "f": "json",
+    }
+    url = f"{TAMPA_PARCELS_URL}?{urllib.parse.urlencode(params)}"
+    try:
+        data = _get_json(url)
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Tampa VacantParcel query failed: {e}")
+    if "error" in data:
+        raise RuntimeError(f"Tampa VacantParcel query failed: {data['error']}")
+
+    leads = []
+    for feature in data.get("features", []):
+        attrs = feature["attributes"]
+        owner_name = (attrs.get("OWNER") or "").strip()
+        if not owner_name or _is_non_individual_owner(owner_name):
+            continue
+        situs = (attrs.get("SITE_ADDR") or "").strip()
+        city = (attrs.get("SITE_CITY") or "").strip()
+        zip_code = (attrs.get("SITE_ZIP") or "").strip()[:5]
+        acreage = attrs.get("ACREAGE") or 0.0
+        if not situs or not city or not zip_code or acreage <= 0:
+            continue
+        geometry = feature.get("geometry")
+        if not geometry or not geometry.get("rings"):
+            continue
+        lat, lon = centroid_of_rings(geometry["rings"])
+        if not passes_flood_wetlands_filter(lat, lon):
+            continue
+
+        owner_street = (attrs.get("ADDR_1") or "").strip()
+        owner_street2 = (attrs.get("ADDR_2") or "").strip()
+        owner_mailing_city = (attrs.get("CITY") or "").strip()
+        owner_mailing_state = (attrs.get("STATE") or "").strip()
+        owner_mailing_zip = (attrs.get("ZIP") or "").strip()[:5]
+        owner_mailing_address = ", ".join(
+            p for p in [owner_street, owner_street2,
+                        f"{owner_mailing_city}, {owner_mailing_state} {owner_mailing_zip}"] if p.strip(",. ")
+        )
+        owner_occupied = bool(owner_street) and situs.split()[0] in owner_street
+
+        sale_price, sale_date, years_owned = _sale_history_or_unknown(
+            attrs.get("AMT"), attrs.get("S_DATE"),
+        )
+        land_val = attrs.get("LAND") or 0.0
+        leads.append(LandLead(
+            apn=(attrs.get("FOLIO") or "").strip(),
+            owner_name=owner_name,
+            owner_mailing_address=owner_mailing_address,
+            property_address=f"{situs}, {city}",
+            city=city,
+            state=market.state,
+            zip=zip_code,
+            county=market.county,
+            land_use="Vacant Residential Land",
+            acreage=acreage,
+            assessed_value=land_val,
+            estimated_value=attrs.get("JUST") or land_val,
+            last_sale_price=sale_price,
+            last_sale_date=sale_date,
+            years_owned=years_owned,
+            owner_occupied=owner_occupied,
+            tax_delinquent=False,
+        ))
+        if len(leads) >= limit:
+            break
+    return leads
+
+
 # Keyed by Market.key -- run.py checks this before falling back to mock.
 LIVE_LAND_LOADERS = {
     "MECKLENBURG_NC": fetch_mecklenburg_vacant_land_leads,
     "MARICOPA_AZ": fetch_maricopa_vacant_land_leads,
     "BEXAR_TX": fetch_bexar_vacant_land_leads,
     "WAKE_NC": fetch_wake_vacant_land_leads,
+    "HILLSBOROUGH_FL": fetch_tampa_vacant_land_leads,
 }

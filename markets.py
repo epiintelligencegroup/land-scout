@@ -28,6 +28,7 @@ STATE_NAMES = {
     "TN": "Tennessee",
     "NC": "North Carolina",
     "AZ": "Arizona",
+    "FL": "Florida",
 }
 
 
@@ -415,8 +416,74 @@ WAKE_NC = Market(
     full_lead_quality_filter=True,
 )
 
+HILLSBOROUGH_FL = Market(
+    key="HILLSBOROUGH_FL",
+    label="Tampa, FL (Hillsborough County)",
+    county="Hillsborough",
+    state="FL",
+    # Added 2026-06-26. Land data is City of Tampa's own VacantParcel
+    # FeatureServer (arcgis.tampagov.net). skip_builder_matching=True
+    # because Tampa's public permit layers (Planning/SingleFamilyPermits
+    # and Planning/PermitsAll on arcgis.tampagov.net, both Accela-sourced)
+    # do not expose a contractor/builder name field -- checked all fields
+    # on both layers live. Every Tampa lead is forwarded as a bare-facts
+    # property card. If a free permit source with contractor names is found
+    # later, this market can be promoted to full builder matching by removing
+    # skip_builder_matching and wiring up a live permit loader.
+    zips=[
+        ("33602", "Tampa", "Downtown Tampa"),
+        ("33603", "Tampa", "Seminole Heights"),
+        ("33604", "Tampa", "Sulphur Springs / Seminole Heights"),
+        ("33605", "Tampa", "Ybor City / East Tampa"),
+        ("33606", "Tampa", "Hyde Park / Davis Islands"),
+        ("33607", "Tampa", "West Tampa / Westshore"),
+        ("33609", "Tampa", "South Tampa / Palma Ceia"),
+        ("33610", "Tampa", "East Tampa / Hillsborough Ave corridor"),
+        ("33611", "Tampa", "South Tampa"),
+        ("33612", "Tampa", "University Area / North Tampa"),
+    ],
+    builder_names=[
+        "Hyde Park Custom Homes", "Ybor City Infill Builders LLC", "Seminole Heights Construction Group",
+        "South Tampa Premier Homes", "Westshore Builders Inc", "Davis Islands Custom Homes",
+        "East Tampa Infill Group", "North Tampa Construction Co", "Palma Ceia Premier Builders",
+        "Tampa Bay Heritage Homes",
+    ],
+    zoning_codes=["RS-50", "RS-60", "RS-75", "RS-100", "RM-16"],
+    permit_source=(
+        "NOT WIRED UP -- no free public permit source with contractor names found "
+        "(2026-06-26 research). Checked: arcgis.tampagov.net Planning/SingleFamilyPermits "
+        "and Planning/PermitsAll (both Accela-sourced ArcGIS layers) -- neither exposes a "
+        "contractor/builder field. City of Tampa uses Accela permitting system; the GIS "
+        "layers it publishes strip the contractor name. Hillsborough County Building "
+        "Services (unincorporated county) has a separate ePlan/ePermit portal but no "
+        "publicly queryable permit API with contractor names was found. Market runs as "
+        "skip_builder_matching=True (bare-facts property cards only) until a free permit "
+        "source is identified."
+    ),
+    gis_source=(
+        "LIVE AND WIRED UP (2026-06-26): City of Tampa's VacantParcel ArcGIS "
+        "FeatureServer (arcgis.tampagov.net/arcgis/rest/services/Parcels/VacantParcel/"
+        "FeatureServer/0) -- free, no login, City-of-Tampa limits only (not all of "
+        "Hillsborough County, but covers all Tampa-city zips in the market). Fields: "
+        "FOLIO (parcel ID), OWNER (owner name), ADDR_1/CITY/STATE/ZIP (owner mailing), "
+        "SITE_ADDR/SITE_CITY/SITE_ZIP (property address), LAND (land value), JUST (just/"
+        "total assessed value), BLDG (building value -- 0 for all VacantParcel records "
+        "by definition), AMT (sale price), S_DATE (sale date epoch ms), ACREAGE. "
+        "Pre-filtered to vacant parcels server-side. Geometry returned in WKID 4326 "
+        "with outSR=4326; centroid computed from polygon rings for FEMA NFHL / NWI "
+        "wetlands checks (flood/wetlands filtering particularly important here given "
+        "Tampa's coastal proximity). SITE_ADDR='0' parcels (no street address) excluded."
+    ),
+    permit_source_is_free=False,  # no permit step at all -- skip_builder_matching bypasses this gate
+    land_source=(
+        "LIVE AND WIRED UP: City of Tampa VacantParcel FeatureServer -- see gis_source above."
+    ),
+    skip_builder_matching=True,
+    full_lead_quality_filter=True,
+)
+
 MARKETS = [
-    MECKLENBURG_NC, MARICOPA_AZ, BEXAR_TX, WAKE_NC,
+    MECKLENBURG_NC, MARICOPA_AZ, BEXAR_TX, WAKE_NC, HILLSBOROUGH_FL,
 ]
 
 
