@@ -38,12 +38,15 @@ from emailer import send_digest_email
 from enrichment import enrich
 from gis_land_sources import LIVE_LAND_LOADERS
 from land_data import generate_mock_land_leads, load_land_leads
+from lead_routing import classify_lead
+from letter_gen import generate_letter
 from live_permit_sources import LIVE_PERMIT_LOADERS
 from markets import CANDIDATE_MARKETS, MARKETS
 from matcher import match_leads_to_builders
 from permits_data import aggregate_builders, generate_mock_permits, load_permits
 from pitch import draft_pitch
 from sent_log import append_sent_keys, lead_key, load_sent_keys
+from skip_trace import batch_skip_trace
 
 MOCK_LEAD_COUNT = int(os.environ.get("MOCK_LEAD_COUNT", "12"))
 WHOLESALER_NAME = os.environ.get("WHOLESALER_NAME", "Ahmaad Piper")
@@ -113,7 +116,10 @@ def run_market(market, today, closing_date, sent_keys):
         already_sent_count = len(leads) - len(fresh_leads)
         print(f"[{label}] {len(fresh_leads)} fresh land lead(s) -- no builder matching "
               f"(you have a direct buyer here), {already_sent_count} already sent in a previous run")
-        deals = [{"land_lead": lead, "enrichment": enrich(lead)} for lead in fresh_leads]
+        deals = [
+            {"land_lead": lead, "enrichment": enrich(lead), "lead_type": classify_lead(lead)}
+            for lead in fresh_leads
+        ]
         return {"market": market, "deals": deals, "unmatched_count": 0}
 
     if permits_csv_path:
@@ -160,6 +166,7 @@ def run_market(market, today, closing_date, sent_keys):
             "pitch": pitch_text,
             "purchase_agreement": purchase_agreement,
             "assignment_contract": assignment_contract,
+            "lead_type": classify_lead(lead),
         })
 
     return {"market": market, "deals": deals, "unmatched_count": len(unmatched)}
@@ -175,11 +182,42 @@ def main():
     market_results = [r for r in all_results if r is not None]
     skipped_markets = [m for m, r in zip(MARKETS, all_results) if r is None]
 
-    # skip_builder_matching markets are excluded here -- the alert's premise
-    # (no active builder matches, go find a market with a free permit source)
-    # doesn't fit a market where there's no builder matching step at all and
-    # the user already has their own buyer; low daily volume there is just
-    # rural inventory, not a reason to suggest switching markets.
+    # --- Tenure routing: batch skip trace + letter generation ---
+    # Collect all phone leads across all markets into one batch so we hit
+    # BatchData once (up to 100 per request) rather than once per market.
+    phone_deals = [
+        deal
+        for result in market_results
+        for deal in result["deals"]
+        if deal["lead_type"] == "PHONE_LEAD"
+    ]
+    if phone_deals:
+        print(f"Skip tracing {len(phone_deals)} phone lead(s) via BatchData...")
+        st_results = batch_skip_trace([d["land_lead"] for d in phone_deals])
+        for deal, st in zip(phone_deals, st_results):
+            deal["skip_trace_result"] = st
+        found = sum(1 for st in st_results if st and st.found)
+        print(f"  BatchData: {found}/{len(phone_deals)} lead(s) returned contact info")
+    else:
+        print("No phone leads this run (no tenure 3-10 year leads found)")
+
+    # Generate direct mail letters for mail leads (10+ years tenure).
+    # Files saved to letters/YYYY-MM-DD/ -- user prints and mails manually.
+    mail_deals = [
+        deal
+        for result in market_results
+        for deal in result["deals"]
+        if deal["lead_type"] == "MAIL_LEAD"
+    ]
+    if mail_deals:
+        print(f"Generating {len(mail_deals)} direct mail letter(s)...")
+        for deal in mail_deals:
+            deal["letter_path"] = generate_letter(deal["land_lead"], today)
+        print(f"  Letters saved to letters/{today}/")
+
+    # --- Low inventory alert ---
+    # skip_builder_matching markets excluded -- low volume there is rural
+    # inventory, not a signal to switch markets.
     low_inventory_results = [
         r for r in market_results
         if not r["market"].skip_builder_matching and len(r["deals"]) < LOW_INVENTORY_THRESHOLD

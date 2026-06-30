@@ -17,6 +17,8 @@ import os
 import urllib.error
 import urllib.request
 
+from lead_routing import MAIL_LEAD, PHONE_LEAD, LOW_PRIORITY, UNKNOWN_TENURE
+
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 RESEND_FROM = os.environ.get("RESEND_FROM", "Land Scout <onboarding@resend.dev>")
 DIGEST_TO = os.environ.get("DIGEST_TO")
@@ -53,6 +55,89 @@ def _motivated_seller_badge(lead):
     if lead.years_owned >= MOTIVATED_SELLER_YEARS:
         return _badge(f"$ Motivated Seller ({lead.years_owned}y held)", "#fef9c3", "#92400e")
     return ""
+
+
+def _lead_type_box(deal):
+    """Colored action box shown at the top of every deal card.
+    Phone leads show skip trace contact info (or 'not found').
+    Mail leads show the generated letter filename.
+    Low priority and unknown tenure get a brief informational note only.
+    """
+    lead = deal["land_lead"]
+    lead_type = deal.get("lead_type", UNKNOWN_TENURE)
+    years = lead.years_owned
+
+    if lead_type == PHONE_LEAD:
+        st = deal.get("skip_trace_result")
+        if st is None:
+            contact_html = (
+                '<span style="color:#6b7280;">BATCHDATA_API_KEY not configured -- '
+                'set it in .env to enable skip tracing</span>'
+            )
+        elif st.error:
+            contact_html = f'<span style="color:#dc2626;">Skip trace error: {st.error}</span>'
+        elif not st.found:
+            contact_html = '<span style="color:#6b7280;">No contact info found</span>'
+        else:
+            phone_html = ""
+            if st.best_phone:
+                p = st.best_phone
+                pct = f"{int(p.score * 100)}%" if p.score else "?"
+                phone_html = (
+                    f'<b>Best number:</b> {p.number} [{p.type}] &middot; Confidence: {pct}<br>'
+                )
+            email_html = ""
+            if st.emails:
+                email_html = f'<b>Email:</b> {", ".join(st.emails[:2])}<br>'
+            name_html = (
+                '<b>Name match:</b> <span style="color:#15803d;">&#10003; Verified</span>'
+                if st.name_verified else
+                '<b>Name match:</b> <span style="color:#dc2626;">&#9888; Mismatch -- verify manually</span>'
+            )
+            contact_html = phone_html + email_html + name_html
+        return (
+            '<div style="background:#f0fdf4; border-left:4px solid #16a34a; padding:10px 14px; '
+            'margin-bottom:14px; border-radius:4px;">'
+            f'<div style="font-weight:700; color:#14532d; margin-bottom:6px; font-size:14px;">'
+            f'&#128222; Phone Lead &mdash; {years}y held</div>'
+            f'<div style="font-size:13px; line-height:1.6;">{contact_html}</div>'
+            '</div>'
+        )
+
+    if lead_type == MAIL_LEAD:
+        letter_path = deal.get("letter_path")
+        letter_html = (
+            f'<b>Letter file:</b> {os.path.basename(letter_path)}'
+            if letter_path else
+            '<span style="color:#dc2626;">Letter generation failed</span>'
+        )
+        return (
+            '<div style="background:#eff6ff; border-left:4px solid #2563eb; padding:10px 14px; '
+            'margin-bottom:14px; border-radius:4px;">'
+            f'<div style="font-weight:700; color:#1e3a8a; margin-bottom:6px; font-size:14px;">'
+            f'&#9993; Mail Lead &mdash; {years}y held &mdash; print &amp; mail this one</div>'
+            f'<div style="font-size:13px;">{letter_html}</div>'
+            '</div>'
+        )
+
+    if lead_type == LOW_PRIORITY:
+        return (
+            '<div style="background:#f9fafb; border-left:4px solid #d1d5db; padding:10px 14px; '
+            'margin-bottom:14px; border-radius:4px;">'
+            '<div style="font-weight:700; color:#4b5563; font-size:13px;">'
+            f'&#8675; Low Priority &mdash; {years}y held (recently acquired, low motivation likely)'
+            '</div></div>'
+        )
+
+    # UNKNOWN_TENURE
+    return (
+        '<div style="background:#fffbeb; border-left:4px solid #d97706; padding:10px 14px; '
+        'margin-bottom:14px; border-radius:4px;">'
+        '<div style="font-weight:700; color:#92400e; font-size:13px;">'
+        '&#63; Unknown Tenure &mdash; no sale history in this county\'s GIS layer. '
+        'Review manually to decide whether to skip trace or mail.'
+        '</div></div>'
+    )
 
 
 def _deal_score(deal):
@@ -109,6 +194,7 @@ def _property_card_html(deal):
     return f"""
     <div style="border:1px solid #e5e7eb; border-radius:10px; padding:20px; margin-bottom:24px; background:#ffffff;">
       <h2 style="margin:0 0 10px 0; font-size:19px; color:#111827;">{full_address}</h2>
+      {_lead_type_box(deal)}
       <table style="border-collapse:collapse; width:100%;">{rows_html}</table>
     </div>
     """
@@ -146,6 +232,7 @@ def _deal_card_html(deal):
     return f"""
     <div style="border:1px solid #e5e7eb; border-radius:10px; padding:20px; margin-bottom:24px; background:#ffffff;">
       <h2 style="margin:0 0 10px 0; font-size:19px; color:#111827;">{lead.property_address}</h2>
+      {_lead_type_box(deal)}
       <div style="margin-bottom:14px;">{badges}</div>
       <table style="border-collapse:collapse; width:100%; margin-bottom:14px;">{rows_html}</table>
       <div style="background:#f0f9ff; border-left:4px solid #0284c7; padding:10px 14px; margin-bottom:14px; border-radius:4px;">
@@ -168,13 +255,53 @@ def _deal_card_html(deal):
     """
 
 
+_TIER_ORDER = [PHONE_LEAD, MAIL_LEAD, LOW_PRIORITY, UNKNOWN_TENURE]
+_TIER_HEADER = {
+    PHONE_LEAD:     ("&#128222; Phone Leads", "#f0fdf4", "#15803d"),
+    MAIL_LEAD:      ("&#9993; Mail Leads",    "#eff6ff", "#1e3a8a"),
+    LOW_PRIORITY:   ("&#8675; Low Priority",  "#f9fafb", "#4b5563"),
+    UNKNOWN_TENURE: ("&#63; Unknown Tenure",  "#fffbeb", "#92400e"),
+}
+
+
+def _tier_counts_badge(deals):
+    from collections import Counter
+    counts = Counter(d.get("lead_type", UNKNOWN_TENURE) for d in deals)
+    parts = []
+    icons = {PHONE_LEAD: "&#128222;", MAIL_LEAD: "&#9993;", LOW_PRIORITY: "&#8675;", UNKNOWN_TENURE: "&#63;"}
+    for tier in _TIER_ORDER:
+        if counts.get(tier):
+            parts.append(f"{icons[tier]}&nbsp;{counts[tier]}")
+    return " &middot; ".join(parts) if parts else "0"
+
+
 def _market_section_html(market, deals, unmatched_count):
-    cards_html = "\n".join(_deal_card_html(d) for d in deals) if deals else (
-        '<p style="color:#6b7280; font-size:13px;">No leads this run.</p>'
-    )
+    if not deals:
+        cards_html = '<p style="color:#6b7280; font-size:13px;">No leads this run.</p>'
+    else:
+        # Group by lead type, render each tier with a subsection header.
+        by_tier = {t: [] for t in _TIER_ORDER}
+        for d in deals:
+            by_tier.setdefault(d.get("lead_type", UNKNOWN_TENURE), []).append(d)
+
+        sections = []
+        for tier in _TIER_ORDER:
+            tier_deals = by_tier[tier]
+            if not tier_deals:
+                continue
+            label, bg, fg = _TIER_HEADER[tier]
+            header = (
+                f'<div style="background:{bg}; color:{fg}; font-weight:700; font-size:13px; '
+                f'padding:7px 12px; border-radius:6px; margin:18px 0 10px 0;">'
+                f'{label} ({len(tier_deals)})</div>'
+            )
+            cards = "\n".join(_deal_card_html(d) for d in tier_deals)
+            sections.append(header + cards)
+        cards_html = "\n".join(sections)
+
     badge_text = (
-        f"{len(deals)} lead(s)" if market.skip_builder_matching
-        else f"{len(deals)} deal(s) &middot; {unmatched_count} unmatched"
+        f"{len(deals)} lead(s) &middot; {_tier_counts_badge(deals)}" if market.skip_builder_matching
+        else f"{len(deals)} deal(s) &middot; {unmatched_count} unmatched &middot; {_tier_counts_badge(deals)}"
     )
     return f"""
     <div style="margin-top:32px;">
@@ -211,7 +338,9 @@ def _dashboard_html(market_results, skipped_markets, total_deals, total_unmatche
         '<div style="display:inline-block; background:#fff; border:1px solid #e5e7eb; '
         'border-radius:8px; padding:10px 16px; margin:0 8px 8px 0; text-align:center;">'
         f'<div style="font-size:22px; font-weight:700; color:#111827;">{len(r["deals"])}</div>'
-        f'<div style="font-size:12px; color:#6b7280;">{r["market"].label}</div></div>'
+        f'<div style="font-size:12px; color:#6b7280;">{r["market"].label}</div>'
+        f'<div style="font-size:11px; color:#9ca3af; margin-top:3px;">{_tier_counts_badge(r["deals"])}</div>'
+        '</div>'
         for r in market_results
     )
     skipped_pills = "".join(
