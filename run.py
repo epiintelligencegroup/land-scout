@@ -1,30 +1,15 @@
 #!/usr/bin/env python3
 """
-Land Scout -- orchestrates the full pipeline across every configured market
-(markets.py): load land leads (real CSV override -> live free GIS source if
-one's registered in gis_land_sources.py -> mock, in that priority order) +
-builder permits (same priority chain, live loaders in live_permit_sources.py)
--> enrich each lead with zoning/flood/wetland -> match leads to active
-builders -> draft a pitch per match -> generate draft contracts -> email one
-combined digest covering every market.
+House Wholesale Pipeline — daily orchestrator.
 
-Free-permit-source gate: a market only runs if its Market.permit_source_is_free
-is True, or a real PERMITS_CSV_PATH_<key> override is configured -- see
-_skip_reason() below. The point is to never quietly start relying on a paid
-permit feed without the user choosing that explicitly. Skipped markets are
-listed in both the console output and the digest email itself.
+For each market:
+  1. Load house leads (real CSV -> live GIS source -> mock)
+  2. Deduplicate against sent_properties.log
+  3. Draft outreach message per fresh lead (Claude)
+  4. Load cash buyers from deed records in same zip codes
 
-Markets with Market.skip_builder_matching=True (the user already has a
-direct buyer there, e.g. Medina/Atascosa Counties TX) skip permits/builders/
-matching entirely and bypass the gate above -- every fresh land lead is sent
-as its own bare-facts deal, see run_market() below.
-
-Every land/permit fetch -- live or mock -- happens fresh on every run; there
-is no caching layer anywhere in this pipeline. Leads already included in a
-past successful send are filtered out before drafting a pitch (skipping the
-Anthropic call too) using sent_log.py's flat append-only log, so the same
-property is never sent twice; the log is only updated after a send actually
-succeeds.
+Then send one combined "House Wholesale Daily Digest" email covering all
+markets. On a confirmed send, log the new lead keys so they are never resent.
 
 Setup:
     cp .env.example .env   # fill in ANTHROPIC_API_KEY, RESEND_API_KEY, DIGEST_TO
@@ -33,214 +18,71 @@ Setup:
 import datetime
 import os
 
-from contracts import fill_assignment_of_contract, fill_purchase_agreement
+from cash_buyers import load_cash_buyers
 from emailer import send_digest_email
-from enrichment import enrich
-from gis_land_sources import LIVE_LAND_LOADERS
-from land_data import generate_mock_land_leads, load_land_leads
-from lead_routing import classify_lead
-from letter_gen import generate_letter
-from live_permit_sources import LIVE_PERMIT_LOADERS
-from markets import CANDIDATE_MARKETS, MARKETS
-from matcher import match_leads_to_builders
-from permits_data import aggregate_builders, generate_mock_permits, load_permits
-from pitch import draft_pitch
+from gis_house_sources import LIVE_HOUSE_LOADERS
+from house_data import generate_mock_house_leads, load_house_leads
+from markets import MARKETS
+from outreach import draft_outreach
 from sent_log import append_sent_keys, lead_key, load_sent_keys
-from skip_trace import batch_skip_trace
 
-MOCK_LEAD_COUNT = int(os.environ.get("MOCK_LEAD_COUNT", "12"))
-WHOLESALER_NAME = os.environ.get("WHOLESALER_NAME", "Ahmaad Piper")
-WHOLESALER_ADDRESS = os.environ.get("WHOLESALER_ADDRESS", "Jacksonville, FL")
-ASSIGNMENT_FEE_DEFAULT = float(os.environ.get("ASSIGNMENT_FEE_DEFAULT", "5000"))
-# Below this many matched deals in a single run, a market is "running low"
-# -- triggers the low-inventory alert + new-market suggestions in the digest.
-LOW_INVENTORY_THRESHOLD = int(os.environ.get("LOW_INVENTORY_THRESHOLD", "3"))
-# Rough starting-offer anchor, not a real valuation -- the contract draft is
-# meant to be edited during actual negotiation, this just avoids a $0 default.
-OFFER_PRICE_FACTOR = 0.60
+MOCK_LEAD_COUNT = int(os.environ.get("MOCK_LEAD_COUNT", "10"))
 
 
-def _market_csv_path(market, kind):
-    """kind is "LAND" or "PERMITS". Per-market env var, e.g. LAND_CSV_PATH_BEXAR_TX."""
-    return os.environ.get(f"{kind}_CSV_PATH_{market.key}") or None
+def _market_csv_path(market):
+    return os.environ.get(f"HOUSE_CSV_PATH_{market.key}") or None
 
 
-def _skip_reason(market, permits_csv_path):
-    """Returns a reason string if this market should be skipped, or None to run it.
-    The gate is permits specifically (the thing we're searching for a free source
-    of) -- a market never runs on mock or real permit data unless permit_source_is_free
-    is True, or the user has explicitly pointed PERMITS_CSV_PATH_<key> at a real
-    export (their own sourcing decision, not the code's to second-guess).
-
-    skip_builder_matching markets never load permits at all (see run_market),
-    so this gate doesn't apply to them -- there's no permit feed to vet."""
-    if market.skip_builder_matching:
-        return None
-    if permits_csv_path or market.permit_source_is_free:
-        return None
-    return (
-        f"no confirmed free permit source yet ({market.permit_source.splitlines()[0][:120]}...) "
-        f"-- set PERMITS_CSV_PATH_{market.key} to override once you have a real export"
-    )
-
-
-def run_market(market, today, closing_date, sent_keys):
+def run_market(market, sent_keys):
     label = market.label
-    land_csv_path = _market_csv_path(market, "LAND")
-    permits_csv_path = _market_csv_path(market, "PERMITS")
+    csv_path = _market_csv_path(market)
 
-    skip_reason = _skip_reason(market, permits_csv_path)
-    if skip_reason:
-        print(f"[{label}] SKIPPED -- {skip_reason}")
-        return None
-
-    if land_csv_path:
-        leads = load_land_leads(land_csv_path)
-        print(f"[{label}] Loaded {len(leads)} real land leads from {land_csv_path}")
-    elif market.key in LIVE_LAND_LOADERS:
-        # Same volume knob as mock data on purpose -- MOCK_LEAD_COUNT default
-        # of 12 keeps a live run's API/email cost predictable; raise it
-        # deliberately, don't let a live source silently pull hundreds.
-        leads = LIVE_LAND_LOADERS[market.key](market, limit=MOCK_LEAD_COUNT)
-        print(f"[{label}] Fetched {len(leads)} real land leads live from {market.key}'s free GIS source")
+    if csv_path:
+        leads = load_house_leads(csv_path)
+        print(f"[{label}] Loaded {len(leads)} leads from {csv_path}")
+    elif market.key in LIVE_HOUSE_LOADERS:
+        leads = LIVE_HOUSE_LOADERS[market.key](market, limit=MOCK_LEAD_COUNT)
+        if not leads:
+            leads = generate_mock_house_leads(market, MOCK_LEAD_COUNT)
+            print(f"[{label}] Live fetch returned 0 leads — using {len(leads)} mock leads")
+        else:
+            print(f"[{label}] Fetched {len(leads)} leads live from county GIS")
     else:
-        leads = generate_mock_land_leads(market, MOCK_LEAD_COUNT)
-        print(f"[{label}] Generated {len(leads)} mock land leads (no LAND_CSV_PATH_{market.key} set)")
+        leads = generate_mock_house_leads(market, MOCK_LEAD_COUNT)
+        print(f"[{label}] Generated {len(leads)} mock leads (no HOUSE_CSV_PATH_{market.key} set)")
 
-    if market.skip_builder_matching:
-        # No permits, no builders, no matching -- the user already has a
-        # direct buyer here (see markets.py). Every fresh land lead becomes
-        # its own "deal"; emailer.py renders these as bare-facts property
-        # cards instead of the usual matched-buyer pitch+contract card.
-        fresh_leads = [lead for lead in leads if lead_key(market, lead) not in sent_keys]
-        already_sent_count = len(leads) - len(fresh_leads)
-        print(f"[{label}] {len(fresh_leads)} fresh land lead(s) -- no builder matching "
-              f"(you have a direct buyer here), {already_sent_count} already sent in a previous run")
-        deals = [
-            {"land_lead": lead, "enrichment": enrich(lead), "lead_type": classify_lead(lead)}
-            for lead in fresh_leads
-        ]
-        return {"market": market, "deals": deals, "unmatched_count": 0}
-
-    if permits_csv_path:
-        permits = load_permits(permits_csv_path)
-        print(f"[{label}] Loaded {len(permits)} real permits from {permits_csv_path}")
-    elif market.key in LIVE_PERMIT_LOADERS:
-        permits = LIVE_PERMIT_LOADERS[market.key](market)
-        print(f"[{label}] Fetched {len(permits)} real permits live from {market.key}'s free source")
-    else:
-        permits = generate_mock_permits(market)
-        print(f"[{label}] Generated {len(permits)} mock permits (no PERMITS_CSV_PATH_{market.key} set)")
-
-    builders = aggregate_builders(permits)
-    print(f"[{label}] {len(builders)} builder buyer-candidates after aggregation (min 2 permits)")
-
-    matches, unmatched = match_leads_to_builders(leads, builders)
-    fresh_matches = [m for m in matches if lead_key(market, m.land_lead) not in sent_keys]
-    already_sent_count = len(matches) - len(fresh_matches)
-    print(f"[{label}] {len(matches)} lead-builder matches, {len(unmatched)} leads unmatched, "
-          f"{already_sent_count} already sent in a previous run")
+    fresh_leads = [lead for lead in leads if lead_key(market, lead) not in sent_keys]
+    already_sent = len(leads) - len(fresh_leads)
+    print(f"[{label}] {len(fresh_leads)} fresh lead(s), {already_sent} already sent before")
 
     deals = []
-    for match in fresh_matches:
-        lead = match.land_lead
-        builder = match.builder
-        enrichment_data = enrich(lead)
-        print(f"  [{label}] Drafting pitch: {lead.property_address} -> {builder.builder_name}")
-        pitch_text = draft_pitch(lead, enrichment_data, builder, match.fit_reason)
+    for lead in fresh_leads:
+        print(f"  [{label}] Drafting outreach: {lead.full_property_address}")
+        outreach_text = draft_outreach(lead)
+        deals.append({"lead": lead, "outreach": outreach_text})
 
-        offer_price = round(lead.estimated_value * OFFER_PRICE_FACTOR, -2)
-        purchase_agreement = fill_purchase_agreement(
-            lead, WHOLESALER_NAME, WHOLESALER_ADDRESS, offer_price, today, closing_date,
-        )
-        assignment_contract = fill_assignment_of_contract(
-            lead, WHOLESALER_NAME, builder.builder_name, "[buyer address]",
-            today, today, ASSIGNMENT_FEE_DEFAULT,
-        )
+    buyers = load_cash_buyers(market)
+    print(f"[{label}] {len(buyers)} cash buyer(s) identified, "
+          f"{sum(1 for b in buyers if b.is_active_flipper)} active flipper(s)")
 
-        deals.append({
-            "land_lead": lead,
-            "builder": builder,
-            "enrichment": enrichment_data,
-            "fit_reason": match.fit_reason,
-            "pitch": pitch_text,
-            "purchase_agreement": purchase_agreement,
-            "assignment_contract": assignment_contract,
-            "lead_type": classify_lead(lead),
-        })
-
-    return {"market": market, "deals": deals, "unmatched_count": len(unmatched)}
+    return {"market": market, "deals": deals, "buyers": buyers}
 
 
 def main():
     today = datetime.date.today().isoformat()
-    closing_date = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
     sent_keys = load_sent_keys()
-    print(f"{len(sent_keys)} properties already sent in past runs (loaded from sent_log)")
+    print(f"{len(sent_keys)} properties already sent in past runs")
 
-    all_results = [run_market(market, today, closing_date, sent_keys) for market in MARKETS]
-    market_results = [r for r in all_results if r is not None]
-    skipped_markets = [m for m, r in zip(MARKETS, all_results) if r is None]
-
-    # --- Tenure routing: batch skip trace + letter generation ---
-    # Collect all phone leads across all markets into one batch so we hit
-    # BatchData once (up to 100 per request) rather than once per market.
-    phone_deals = [
-        deal
-        for result in market_results
-        for deal in result["deals"]
-        if deal["lead_type"] == "PHONE_LEAD"
-    ]
-    if phone_deals:
-        print(f"Skip tracing {len(phone_deals)} phone lead(s) via BatchData...")
-        st_results = batch_skip_trace([d["land_lead"] for d in phone_deals])
-        for deal, st in zip(phone_deals, st_results):
-            deal["skip_trace_result"] = st
-        found = sum(1 for st in st_results if st and st.found)
-        print(f"  BatchData: {found}/{len(phone_deals)} lead(s) returned contact info")
-    else:
-        print("No phone leads this run (no tenure 3-10 year leads found)")
-
-    # Generate direct mail letters for mail leads (10+ years tenure).
-    # Files saved to letters/YYYY-MM-DD/ -- user prints and mails manually.
-    mail_deals = [
-        deal
-        for result in market_results
-        for deal in result["deals"]
-        if deal["lead_type"] == "MAIL_LEAD"
-    ]
-    if mail_deals:
-        print(f"Generating {len(mail_deals)} direct mail letter(s)...")
-        for deal in mail_deals:
-            deal["letter_path"] = generate_letter(deal["land_lead"], today)
-        print(f"  Letters saved to letters/{today}/")
-
-    # --- Low inventory alert ---
-    # skip_builder_matching markets excluded -- low volume there is rural
-    # inventory, not a signal to switch markets.
-    low_inventory_results = [
-        r for r in market_results
-        if not r["market"].skip_builder_matching and len(r["deals"]) < LOW_INVENTORY_THRESHOLD
-    ]
-    for r in low_inventory_results:
-        print(f"[{r['market'].label}] LOW INVENTORY -- {len(r['deals'])} matched deal(s), "
-              f"below threshold of {LOW_INVENTORY_THRESHOLD}")
+    market_results = [run_market(market, sent_keys) for market in MARKETS]
 
     total_deals = sum(len(r["deals"]) for r in market_results)
-    skip_note = f" ({len(skipped_markets)} market(s) skipped -- no free permit source)" if skipped_markets else ""
-    print(f"{total_deals} total matched deals across {len(market_results)} markets{skip_note}")
+    print(f"{total_deals} total fresh leads across {len(market_results)} markets")
 
-    sent_ok = send_digest_email(
-        market_results,
-        skipped_markets=skipped_markets,
-        low_inventory_results=low_inventory_results,
-        candidate_markets=CANDIDATE_MARKETS,
-        run_label=today,
-    )
+    sent_ok = send_digest_email(market_results, run_label=today)
     if sent_ok:
-        new_keys = [lead_key(r["market"], d["land_lead"]) for r in market_results for d in r["deals"]]
+        new_keys = [lead_key(r["market"], d["lead"]) for r in market_results for d in r["deals"]]
         append_sent_keys(new_keys)
-        print(f"Logged {len(new_keys)} newly-sent properties to sent_log -- won't be resent.")
+        print(f"Logged {len(new_keys)} newly-sent properties to sent_log.")
     print("Done.")
 
 

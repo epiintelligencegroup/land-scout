@@ -1,17 +1,8 @@
 """
-Tracks every property the digest has ever sent, forever, so a later run --
-later today or any future day -- never pitches the same lead twice. An
-append-only plain-text file, one "market_key:apn" identifier per line.
-Intentionally a flat file over a database: this is a low-volume daily list,
-and a flat file is trivial to inspect, diff, or hand-edit if needed.
-
-This file is git-tracked, not gitignored -- the cloud routine clones a
-fresh checkout every scheduled run, so the dedup log has to live in the
-repo itself (committed and pushed back after a successful send) to carry
-forward across days. See the routine's prompt / README for the commit step.
-
-Filtering happens in run.py before drafting a pitch, not just before
-sending -- skipping an already-sent lead also skips its Anthropic API call.
+Append-only dedup log — one "market_key:apn" per line.
+The log is git-tracked so the cloud routine's fresh checkout picks it up.
+Only updated after a confirmed send so a failed run never silently marks
+properties as sent.
 """
 import os
 
@@ -19,9 +10,6 @@ SENT_LOG_PATH = os.environ.get("SENT_LOG_PATH") or "sent_properties.log"
 
 
 def lead_key(market, lead):
-    # Namespaced by market so two different counties can never collide on
-    # APN, and so the same physical parcel re-appearing under a different
-    # market key (shouldn't happen, but cheap insurance) isn't conflated.
     return f"{market.key}:{lead.apn}"
 
 
