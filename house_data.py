@@ -61,9 +61,10 @@ class HouseLead:
 
     @property
     def is_absentee(self):
+        # Compare 5-digit base zip to handle +4 format from some county APIs
         return (
             self.owner_mailing_address.upper().strip() != self.property_address.upper().strip()
-            or self.owner_mailing_zip.strip() != self.zip_code.strip()
+            or self.owner_mailing_zip.strip()[:5] != self.zip_code.strip()[:5]
         )
 
     @property
@@ -101,10 +102,10 @@ class HouseLead:
             score += 3
         elif self.is_absentee:
             score += 1
-        # Property age: 0-2 points
-        if self.year_built < 1970:
+        # Property age: 0-2 points (skip if year_built unknown/sentinel 0)
+        if 1800 < self.year_built < 1970:
             score += 2
-        elif self.year_built < 1980:
+        elif 1800 < self.year_built < 1980:
             score += 1
         return max(1, min(10, score))
 
