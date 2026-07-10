@@ -18,12 +18,29 @@ Live sources (confirmed endpoints):
 import datetime
 import json
 import random
+import re
 import urllib.parse
 import urllib.request
 from collections import defaultdict
 
 CURRENT_YEAR = datetime.date.today().year
 _TIMEOUT = 25
+
+# Keywords in a buyer's name that signal a non-real-estate business — exclude these.
+_NON_RE_BUSINESS_RE = re.compile(
+    r"\b(?:CLEAN(?:ING|ERS?|UP)?|MAID|JANITORIAL|SANIT"
+    r"|MEDICAL|DENTAL|HEALTH(?:CARE)?|CLINIC|HOSPITAL|PHARMACY|PHARMA"
+    r"|RESTAURAN?T|FOOD|PIZZA|DINER|CAFE|CATERING|BAR\b|GRILL\b"
+    r"|RETAIL|STORE|SHOP\b|BOUTIQUE|SALON|NAIL\b|BARBER|SPA\b"
+    r"|LANDSCAP|LAWN|GARDEN|TREE\s*SERVICE|PEST\s*CONTROL"
+    r"|MAINTENAN?CE|REPAIR|PLUMB|ELECTRIC|HVAC|ROOFING|PAINTING"
+    r"|TRUCKING|TRANSPORT|MOVING|LOGISTICS|DELIVERY"
+    r"|CHURCH|MINISTRY|FAITH|TEMPLE|MOSQUE"
+    r"|SCHOOL|EDUCAT|ACADEMY|TUTORING"
+    r"|INSURANCE|FINANC(?:IAL|E)|ACCOUNTING|TAX\s*SERVICE"
+    r"|AUTO\b|CAR\b|VEHICLE|MECHANIC|TIRE\b)\b",
+    re.IGNORECASE,
+)
 
 
 class CashBuyer:
@@ -60,8 +77,23 @@ def _attrs(feat):
     return feat.get("attributes") or {}
 
 
+def _is_real_estate_buyer(name: str) -> bool:
+    """Return True if the name looks like a genuine real estate investor/buyer.
+
+    Rules:
+    - Must have 3+ purchases in last 2 years (enforced in _build_buyers, not here)
+    - Excluded: names matching non-RE business keywords (cleaning, medical, restaurant, etc.)
+    """
+    return not bool(_NON_RE_BUSINESS_RE.search(name))
+
+
 def _build_buyers(records, top_n=20):
-    """Deduplicate and sort buyer records. Each record: (name, addr, zip, date_iso)."""
+    """Deduplicate and sort buyer records. Each record: (name, addr, zip, date_iso).
+
+    Inclusion criteria:
+    - 3+ purchases in the last 2 years (both individuals and entities)
+    - Not a non-real-estate business (cleaning, medical, restaurant, etc.)
+    """
     cutoff_12 = (datetime.date.today() - datetime.timedelta(days=365)).isoformat()
     by_buyer: dict = defaultdict(list)
     for name, addr, zip_code, date_iso in records:
@@ -73,6 +105,12 @@ def _build_buyers(records, top_n=20):
     buyers = []
     for (name, addr), purchases in by_buyer.items():
         two_year = len(purchases)
+        # Require at least 3 purchases in 2 years for everyone
+        if two_year < 3:
+            continue
+        # Exclude non-real-estate businesses
+        if not _is_real_estate_buyer(name):
+            continue
         recent = sum(1 for d, _ in purchases if d >= cutoff_12)
         zips = list({z for _, z in purchases if z})
         buyers.append(CashBuyer(
@@ -292,8 +330,8 @@ def generate_mock_cash_buyers(market, count=8):
             )
         else:
             name = f"{rng.choice(_BUYER_FIRST)} {rng.choice(_BUYER_LAST)}"
-        two_yr = rng.randint(1, 9)
-        recent = min(two_yr, rng.randint(0, 5))
+        two_yr = rng.randint(3, 9)  # minimum 3 to match live-data filter threshold
+        recent = min(two_yr, rng.randint(1, 5))
         active_zips = rng.sample(market_zips, min(rng.randint(1, 4), len(market_zips)))
         buyers.append(CashBuyer(
             name=name,

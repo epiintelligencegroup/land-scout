@@ -29,6 +29,74 @@ from house_data import CURRENT_YEAR, HouseLead, _is_non_individual
 
 _TIMEOUT = 60
 
+# Cities that indicate a missing/unknown property location — skip these leads.
+_BAD_CITIES = {"", "unincorporated", "unknown", "county", "n/a", "none"}
+
+# Canonical street suffix abbreviations for professional-looking addresses.
+_SUFFIX_MAP = {
+    "AVENUE": "Ave", "AVE": "Ave",
+    "BOULEVARD": "Blvd", "BLVD": "Blvd",
+    "CIRCLE": "Cir", "CIR": "Cir",
+    "COURT": "Ct", "CT": "Ct",
+    "DRIVE": "Dr", "DR": "Dr",
+    "EXPRESSWAY": "Expy", "EXPY": "Expy",
+    "FREEWAY": "Fwy", "FWY": "Fwy",
+    "HIGHWAY": "Hwy", "HWY": "Hwy",
+    "LANE": "Ln", "LN": "Ln",
+    "LOOP": "Loop",
+    "PARKWAY": "Pkwy", "PKWY": "Pkwy",
+    "PLACE": "Pl", "PL": "Pl",
+    "PLAZA": "Plz", "PLZ": "Plz",
+    "ROAD": "Rd", "RD": "Rd",
+    "ROUTE": "Rte", "RTE": "Rte",
+    "SQUARE": "Sq", "SQ": "Sq",
+    "STREET": "St", "ST": "St",
+    "TERRACE": "Ter", "TER": "Ter", "TERR": "Ter",
+    "TRAIL": "Trl", "TRL": "Trl",
+    "WAY": "Way",
+}
+
+_DIRECTION_MAP = {
+    "NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W",
+    "NORTHEAST": "NE", "NORTHWEST": "NW", "SOUTHEAST": "SE", "SOUTHWEST": "SW",
+}
+
+
+def _clean_street(raw: str) -> str:
+    """Normalize an all-caps street address to professional mixed-case.
+
+    Converts suffix abbreviations (ST→St, AVE→Ave) and direction prefixes/suffixes
+    so output looks like '1234 N Main St' rather than '1234 N Main ST'.
+    """
+    if not raw:
+        return raw
+    tokens = raw.upper().split()
+    out = []
+    for i, tok in enumerate(tokens):
+        if i == 0 and tok.replace("-", "").isdigit():
+            out.append(tok)  # house number — keep as-is
+        elif tok in _SUFFIX_MAP:
+            out.append(_SUFFIX_MAP[tok])
+        elif tok in _DIRECTION_MAP and i > 0:
+            out.append(_DIRECTION_MAP[tok])
+        else:
+            out.append(tok.capitalize())
+    return " ".join(out)
+
+
+def _valid_address(street: str, city: str, zip_code: str) -> bool:
+    """Return False for addresses we should skip."""
+    # Must start with a digit (house number)
+    if not street or not street[:1].isdigit():
+        return False
+    # City must be present and not a placeholder
+    if city.lower().strip() in _BAD_CITIES:
+        return False
+    # Zip must be exactly 5 digits
+    if not re.fullmatch(r"\d{5}", zip_code.strip()):
+        return False
+    return True
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -108,13 +176,13 @@ def load_cuyahoga_oh(market, limit=15):
 
         # Street is everything before the first comma in par_addr_all
         par_addr_all = (a.get("par_addr_all") or "").strip()
-        street = par_addr_all.split(",")[0].strip().title() if par_addr_all else ""
+        street = _clean_street(par_addr_all.split(",")[0].strip()) if par_addr_all else ""
         city = (a.get("parcel_city") or "").strip().title()
-        zip_code = str(a.get("parcel_zip") or "").strip()
-        if not street or not street[:1].isdigit():
+        zip_code = str(a.get("parcel_zip") or "").strip()[:5]
+        if not _valid_address(street, city, zip_code):
             continue
 
-        mail_addr = (a.get("mail_addr_street") or "").strip().title()
+        mail_addr = _clean_street((a.get("mail_addr_street") or "").strip())
         mail_zip = str(a.get("mail_zip") or "").strip()
         mail_state = (a.get("mail_state") or "").strip().upper()
         mail_city = (a.get("mail_city") or "").strip().title()
@@ -210,6 +278,9 @@ def load_shelby_tn(market, limit=15):
         par_addr = (a.get("PAR_ADDR1") or "").strip()
         if not par_addr or not par_addr[:1].isdigit():
             continue
+        muni = (a.get("MUNI") or "").strip()
+        if muni.upper() in ("", "UNINCORPORATED", "UNKNOWN", "N/A"):
+            continue
         parcels.append(a)
 
     if not parcels:
@@ -273,22 +344,29 @@ def load_shelby_tn(market, limit=15):
             adrno = str(adrno_raw).split(".")[0]
         adrstr = (a.get("OWN_ADRSTR") or "").strip()
         adrsuf = (a.get("OWN_ADRSUF") or "").strip()
-        mail_addr = " ".join(p for p in [adrno, adrstr, adrsuf] if p).title()
+        mail_addr = _clean_street(" ".join(p for p in [adrno, adrstr, adrsuf] if p))
         mail_city = (a.get("OWN_CITY") or "").strip().title()
         mail_state = (a.get("OWN_STATE") or "").strip().upper()
-        mail_zip = str(a.get("OWN_ZIP") or "").strip()
+        mail_zip = str(a.get("OWN_ZIP") or "").strip()[:5]
 
         par_addr = (a.get("PAR_ADDR1") or "").strip()
-        city = (a.get("MUNI") or "Memphis").strip().title()
+        city = (a.get("MUNI") or "").strip().title()
 
-        # Absentee check (state differs is already filtered server-side)
+        # Shelby layer has no property zip — derive from market city→zip lookup
+        _city_zip = {c.lower(): z for z, c in market.zips}
+        zip_code = _city_zip.get(city.lower(), "")
+
+        street = _clean_street(par_addr)
+        if not _valid_address(street, city, zip_code):
+            continue
+
         # No assessed value / year built from this source — set sentinels
         leads.append(HouseLead(
             apn=parid,
-            property_address=par_addr,
+            property_address=street,
             city=city,
             state="TN",
-            zip_code="",  # no zip in this layer; left blank
+            zip_code=zip_code,
             owner_name=name.title(),
             owner_mailing_address=mail_addr,
             owner_mailing_city=mail_city,
@@ -356,16 +434,15 @@ def load_harris_tx(market, limit=15):
         num = str(a.get("site_str_num") or "").strip()
         street_name = (a.get("site_str_name") or "").strip()
         street_sfx = (a.get("site_str_sfx") or "").strip()
-        prop_addr = " ".join(p for p in [num, street_name, street_sfx] if p).title()
-        if not prop_addr or not prop_addr[:1].isdigit():
+        prop_addr = _clean_street(" ".join(p for p in [num, street_name, street_sfx] if p))
+        prop_city = (a.get("site_city") or "").strip().title()
+        prop_zip = str(a.get("site_zip") or "").strip()[:5]
+        if not _valid_address(prop_addr, prop_city, prop_zip):
             continue
 
-        prop_city = (a.get("site_city") or "Houston").strip().title()
-        prop_zip = str(a.get("site_zip") or "").strip()
-
         # Mailing address
-        mail1 = (a.get("mail_addr_1") or "").strip().title()
-        mail2 = (a.get("mail_addr_2") or "").strip().title()
+        mail1 = _clean_street((a.get("mail_addr_1") or "").strip())
+        mail2 = _clean_street((a.get("mail_addr_2") or "").strip())
         mail_addr = f"{mail1} {mail2}".strip() if mail2 else mail1
         mail_city = (a.get("mail_city") or "").strip().title()
         mail_state = (a.get("mail_state") or "").strip().upper()
@@ -455,19 +532,19 @@ def load_jefferson_al(market, limit=15):
         if not name or _is_non_individual(name):
             continue
 
-        prop_addr = (a.get("ADDR_PSPR") or "").strip()
-        if not prop_addr or not prop_addr[:1].isdigit():
+        prop_addr = _clean_street((a.get("ADDR_PSPR") or "").strip())
+        prop_city = (a.get("CITY") or "").strip().title()
+        prop_zip = str(a.get("ZIP") or "").strip()[:5]
+        if not _valid_address(prop_addr, prop_city, prop_zip):
             continue
-        prop_city = (a.get("CITY") or "Birmingham").strip().title()
-        prop_zip = str(a.get("ZIP") or "").strip()
 
-        mail_addr = (a.get("PROP_MAIL") or "").strip().title()
+        mail_addr = _clean_street((a.get("PROP_MAIL") or "").strip())
         mail_city = (a.get("CITYMAIL") or "").strip().title()
         mail_state = (a.get("STATE_Mail") or "").strip().upper()
-        mail_zip = str(a.get("ZIP_MAIL") or "").strip()
+        mail_zip = str(a.get("ZIP_MAIL") or "").strip()[:5]
 
         # Absentee (already filtered server-side to non-AL; also check same-state)
-        if mail_addr.upper() == prop_addr.upper() and mail_zip == prop_zip:
+        if mail_addr.upper() == prop_addr.upper() and mail_zip[:5] == prop_zip[:5]:
             continue
 
         # PrevParcelTotal = full appraised (market) value for AL
@@ -486,7 +563,7 @@ def load_jefferson_al(market, limit=15):
             owner_mailing_address=mail_addr,
             owner_mailing_city=mail_city,
             owner_mailing_state=mail_state,
-            owner_mailing_zip=mail_zip,
+            owner_mailing_zip=mail_zip[:5],
             year_built=0,        # not in any public Jefferson AL layer
             assessed_value=assessed,
             improvement_value=improvement,
@@ -549,20 +626,20 @@ def load_duval_fl(market, limit=15):
         if not name or _is_non_individual(name):
             continue
 
-        prop_addr = (a.get("PHY_ADDR1") or "").strip()
-        if not prop_addr or not prop_addr[:1].isdigit():
+        prop_addr = _clean_street((a.get("PHY_ADDR1") or "").strip())
+        prop_city = (a.get("PHY_CITY") or "").strip().title()
+        prop_zip = str(a.get("PHY_ZIPCD") or "").strip()[:5]
+        if not _valid_address(prop_addr, prop_city, prop_zip):
             continue
-        prop_city = (a.get("PHY_CITY") or "Jacksonville").strip().title()
-        prop_zip = str(a.get("PHY_ZIPCD") or "").strip()
 
         # Mailing address (OWN_ADDR2 is continuation/unit; OWN_ADDR1 is street)
-        mail_addr = (a.get("OWN_ADDR1") or "").strip().title()
+        mail_addr = _clean_street((a.get("OWN_ADDR1") or "").strip())
         addr2 = (a.get("OWN_ADDR2") or "").strip()
         if addr2:
             mail_addr = f"{mail_addr} {addr2.title()}".strip()
         mail_city = (a.get("OWN_CITY") or "").strip().title()
         mail_state = (a.get("OWN_STATE") or "").strip().upper()
-        mail_zip = str(a.get("OWN_ZIPCD") or "").strip()
+        mail_zip = str(a.get("OWN_ZIPCD") or "").strip()[:5]
 
         # Absentee: out-of-state OR different zip from property
         if mail_state == "FL" and mail_zip == prop_zip:
