@@ -1,27 +1,33 @@
 """
 Live county assessor GIS loaders — all five markets.
 
-Confirmed working endpoints (researched 2026-07-09):
-  Cuyahoga OH  : gis.cuyahogacounty.gov Parcel_Fabric_Taxparcels FeatureServer/0
-  Shelby TN    : scgis.shelbycountytn.gov CERTParcel MapServer/0 + MapServer/1 (RSALES join)
-  Harris TX    : gis.hctx.net HCAD/Parcels MapServer/0
-  Jefferson AL : jccgis.jccal.org Basemap/Parcels MapServer/0
-  Duval FL     : services5.arcgis.com FL_Parcels FeatureServer/0 (statewide FL roll)
+Confirmed working endpoints (researched 2026-07-10):
+  Shelby TN   : scgis.shelbycountytn.gov CERTParcel MapServer/0 + MapServer/1 (RSALES join)
+  Harris TX   : gis.hctx.net HCAD/Parcels MapServer/0
+  Wayne MI    : services2.arcgis.com Detroit tentative_assessment_roll_2026 FeatureServer/0
+  Fulton GA   : gismaps.fultoncountyga.gov Tax_ParcelCurrentDigest_GCS_WGS_1984 MapServer/0
+  Marion IN   : gis.indy.gov MapIndy/MapIndyProperty MapServer/10
 
 Priority chain per market in run.py:
   real CSV override -> live loader here -> generate_mock_house_leads()
 
-Known field gaps (no live free source):
+Known field gaps (no free source available):
   Shelby TN   : no assessed value, no year built in any public layer
   Harris TX   : no year built in the HCAD parcels REST layer
-  Jefferson AL: no year built, no sale date in any public layer
+  Fulton GA   : no year built, no sale date in public layer
+  Marion IN   : no year built, no sale date in public layer
 
-For Alabama: AssdValue is 10% of market; PrevParcelTotal is the full appraised value.
-We use PrevParcelTotal (market-level value) for the $50k-$300k filter and offer calc.
+Value semantics by state:
+  MI: amt_estimated_true_cash_value = estimated full market value (~100%)
+  GA: TotAppr = appraised fair market value (100%); TotAssess = 40% of market
+  IN: ASSESSORYEAR_TOTALAV = True Tax Value (100% of market)
+  TX: total_appraised_val = HCAD full appraised value (~100%)
+  TN: last sale price used as assessed proxy (layer has no value fields)
 """
 import datetime
 import json
 import re
+import ssl
 import urllib.parse
 import urllib.request
 
@@ -107,6 +113,18 @@ def _get_json(url, params=None):
         return json.loads(resp.read().decode())
 
 
+def _get_json_no_ssl(url, params=None):
+    """Like _get_json but skips SSL cert verification.
+    Used for gismaps.fultoncountyga.gov, which has a cert chain issue on macOS Python."""
+    full_url = url + ("?" + urllib.parse.urlencode(params) if params else "")
+    req = urllib.request.Request(full_url, headers={"User-Agent": "HouseWholesalePipeline/1.0"})
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with urllib.request.urlopen(req, timeout=_TIMEOUT, context=ctx) as resp:
+        return json.loads(resp.read().decode())
+
+
 def _attrs(feat):
     return feat.get("attributes") or {}
 
@@ -127,110 +145,15 @@ def _year_from_ms(ms) -> int:
     return datetime.datetime.utcfromtimestamp(int(ms) / 1000).year
 
 
-# ─── Cuyahoga County OH (Cleveland) ──────────────────────────────────────────
-# All needed fields available in one layer.
-# tax_market_total = Ohio's full market value estimate (assessed = 35% of market).
-# We filter and display on market value so the $50k-$300k range reflects real prices.
-# homestead_flag = 1 means owner-occupied homestead; non-1/null = likely absentee.
-# min_age = year the oldest structure was built.
-
-_CUYAHOGA_URL = (
-    "https://gis.cuyahogacounty.gov/server/rest/services/CCFO"
-    "/Parcel_Fabric_Taxparcels/FeatureServer/0/query"
-)
-
-
-def load_cuyahoga_oh(market, limit=15):
-    # Cuyahoga par_addr_all format: "NUMBER STREET, CITY, OH, ZIP"
-    # Use separate parcel_city + parcel_zip fields to avoid parsing.
-    ten_yr_date = _ten_years_ago_date()
-    params = {
-        "where": (
-            "property_class='R' AND min_age > 0 AND min_age < 1990 "
-            "AND tax_market_total >= 50000 AND tax_market_total <= 300000 "
-            "AND tax_assessed_improvement > 0 "
-            f"AND last_transfer_date < {ten_yr_date}"
-        ),
-        "outFields": (
-            "parcel_id,parcel_owner,mail_addr_street,mail_city,mail_state,mail_zip,"
-            "par_addr_all,parcel_city,parcel_zip,"
-            "min_age,tax_assessed_improvement,tax_market_total,last_transfer_date"
-        ),
-        "returnGeometry": "false",
-        "resultRecordCount": min(limit * 6, 1000),
-        "f": "json",
-    }
+def _years_from_iso_date(date_str) -> int:
+    """Parse ISO date string 'YYYY-MM-DD' and return years since then."""
+    if not date_str:
+        return 0
     try:
-        data = _get_json(_CUYAHOGA_URL, params)
-        features = data.get("features") or []
-    except Exception as exc:
-        print(f"  [CUYAHOGA_OH] live fetch failed ({exc}), using mock data")
-        return []
-
-    leads = []
-    for feat in features:
-        a = _attrs(feat)
-        name = (a.get("parcel_owner") or "").strip()
-        if not name or _is_non_individual(name):
-            continue
-
-        # Street is everything before the first comma in par_addr_all
-        par_addr_all = (a.get("par_addr_all") or "").strip()
-        street = _clean_street(par_addr_all.split(",")[0].strip()) if par_addr_all else ""
-        city = (a.get("parcel_city") or "").strip().title()
-        zip_code = str(a.get("parcel_zip") or "").strip()[:5]
-        if not _valid_address(street, city, zip_code):
-            continue
-
-        mail_addr = _clean_street((a.get("mail_addr_street") or "").strip())
-        mail_zip = str(a.get("mail_zip") or "").strip()
-        mail_state = (a.get("mail_state") or "").strip().upper()
-        mail_city = (a.get("mail_city") or "").strip().title()
-
-        # Absentee: mailing ≠ property. Compare 5-digit base zip (mail may have +4 format).
-        if mail_addr.upper() == street.upper() and mail_zip[:5] == zip_code[:5]:
-            continue
-
-        year_built = int(a.get("min_age") or 0)
-        if year_built < 1800 or year_built >= 1990:
-            continue
-
-        assessed = float(a.get("tax_market_total") or 0)
-        improvement = float(a.get("tax_assessed_improvement") or 0)
-        if not (50000 <= assessed <= 300000) or improvement <= 0:
-            continue
-
-        transfer_ms = a.get("last_transfer_date")
-        if not transfer_ms:
-            continue
-        sale_year = _year_from_ms(transfer_ms)
-        years_owned = CURRENT_YEAR - sale_year
-        if years_owned < 10:
-            continue
-
-        leads.append(HouseLead(
-            apn=str(a.get("parcel_id") or "").strip(),
-            property_address=street,
-            city=city,
-            state="OH",
-            zip_code=zip_code,
-            owner_name=name.title(),
-            owner_mailing_address=mail_addr,
-            owner_mailing_city=mail_city,
-            owner_mailing_state=mail_state,
-            owner_mailing_zip=mail_zip[:5],  # normalize to 5-digit
-            year_built=year_built,
-            assessed_value=assessed,
-            improvement_value=improvement,
-            years_owned=years_owned,
-            last_sale_date=str(sale_year),
-            last_sale_price=0.0,
-            property_class="SFR",
-        ))
-        if len(leads) >= limit:
-            break
-
-    return leads
+        d = datetime.date.fromisoformat(str(date_str)[:10])
+        return CURRENT_YEAR - d.year
+    except (ValueError, TypeError):
+        return 0
 
 
 # ─── Shelby County TN (Memphis) ──────────────────────────────────────────────
@@ -248,6 +171,8 @@ _SHELBY_PARCEL_URL = (
 _SHELBY_RSALES_URL = (
     "https://scgis.shelbycountytn.gov/serverhigh/rest/services/Parcel/CERTParcel/MapServer/1/query"
 )
+
+
 def load_shelby_tn(market, limit=15):
     # Step 1: Fetch absentee SFR parcels
     params_p = {
@@ -490,84 +415,248 @@ def load_harris_tx(market, limit=15):
     return leads
 
 
-# ─── Jefferson County AL (Birmingham) ────────────────────────────────────────
-# Basemap/Parcels MapServer/0 at jccgis.jccal.org.
-# Alabama residential assessed value = 10% of market. PrevParcelTotal = full appraised value.
-# We use PrevParcelTotal for the $50k–$300k filter (market-level, not assessed-level).
-# No year built or sale date in any public layer — those filters are skipped.
+# ─── Wayne County MI (Detroit) ───────────────────────────────────────────────
+# City of Detroit Tentative Assessment Roll 2026 — published by Detroit's ArcGIS org.
+# property_class='401' = Residential-Improved; use_code='41110' = Single Family.
+# amt_estimated_true_cash_value = estimated full market value (not just SEV).
+# amt_land_value = land portion; improvement = TCV - land.
+# residential_year_built is available in this layer.
+# sale_date is ISO string or null; null → assume long-held (years_owned=15).
+# taxpayer_address/city/state/zip_code = mailing address of record.
+# Note: layer covers Detroit city proper; target zips are all within Detroit.
 
-_JEFFERSON_URL = (
-    "https://jccgis.jccal.org/server/rest/services/Basemap/Parcels/MapServer/0/query"
+_WAYNE_ASSESSMENT_URL = (
+    "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services"
+    "/tentative_assessment_roll_2026/FeatureServer/0/query"
 )
 
 
-def load_jefferson_al(market, limit=15):
+def load_wayne_mi(market, limit=15):
+    zip_list = ",".join(f"'{z}'" for z, _ in market.zips)
+    _city_zip = {c.lower(): z for z, c in market.zips}
+
     params = {
         "where": (
-            "Cls='R' AND BLDG_IND='YES' "
-            "AND PrevParcelTotal >= 50000 AND PrevParcelTotal <= 300000 "
-            "AND PrevParcelImp > 0 "
-            "AND OWNERNAME IS NOT NULL "
-            "AND STATE_Mail IS NOT NULL AND STATE_Mail NOT IN ('AL','')"
+            f"property_class='401' "
+            f"AND use_code='41110' "
+            f"AND zip_code IN ({zip_list}) "
+            "AND amt_estimated_true_cash_value >= 50000 "
+            "AND amt_estimated_true_cash_value <= 300000 "
+            "AND is_improved=1 "
+            "AND tax_status='TAXABLE' "
+            "AND residential_year_built > 0 "
+            "AND residential_year_built < 1990 "
+            "AND taxpayer_state IS NOT NULL AND taxpayer_state <> 'MI'"
         ),
         "outFields": (
-            "PARCELID,OWNERNAME,PROP_MAIL,CITYMAIL,ZIP_MAIL,STATE_Mail,"
-            "ADDR_PSPR,CITY,ZIP,PrevParcelImp,PrevParcelTotal"
+            "parcel_id,address,zip_code,street_number,street_prefix,street_name,"
+            "taxpayer_1,taxpayer_address,taxpayer_city,taxpayer_state,taxpayer_zip_code,"
+            "residential_year_built,amt_estimated_true_cash_value,amt_land_value,sale_date"
         ),
         "returnGeometry": "false",
         "resultRecordCount": min(limit * 6, 1000),
         "f": "json",
     }
     try:
-        data = _get_json(_JEFFERSON_URL, params)
+        data = _get_json(_WAYNE_ASSESSMENT_URL, params)
         features = data.get("features") or []
     except Exception as exc:
-        print(f"  [JEFFERSON_AL] live fetch failed ({exc}), using mock data")
+        print(f"  [WAYNE_MI] live fetch failed ({exc}), using mock data")
         return []
 
     leads = []
     for feat in features:
         a = _attrs(feat)
-        name = (a.get("OWNERNAME") or "").strip()
+        name = (a.get("taxpayer_1") or "").strip()
         if not name or _is_non_individual(name):
             continue
 
-        prop_addr = _clean_street((a.get("ADDR_PSPR") or "").strip())
-        prop_city = (a.get("CITY") or "").strip().title()
-        prop_zip = str(a.get("ZIP") or "").strip()[:5]
+        # Property address: the `address` field is street only (e.g. "1099 MORRELL")
+        # Look up city from zip; Detroit zips all map to "Detroit"
+        prop_zip = str(a.get("zip_code") or "").strip()[:5]
+        raw_addr = (a.get("address") or "").strip()
+        # address field sometimes lacks house number — fall back to street_number + street_name
+        if not raw_addr or not raw_addr[:1].isdigit():
+            num = str(a.get("street_number") or "").strip()
+            sfx = str(a.get("street_prefix") or "").strip()
+            sname = (a.get("street_name") or "").strip()
+            raw_addr = " ".join(p for p in [num, sfx, sname] if p)
+        prop_addr = _clean_street(raw_addr)
+        prop_city = "Detroit"  # all target zips are Detroit city proper
         if not _valid_address(prop_addr, prop_city, prop_zip):
             continue
 
-        mail_addr = _clean_street((a.get("PROP_MAIL") or "").strip())
-        mail_city = (a.get("CITYMAIL") or "").strip().title()
-        mail_state = (a.get("STATE_Mail") or "").strip().upper()
-        mail_zip = str(a.get("ZIP_MAIL") or "").strip()[:5]
+        # Mailing address
+        mail_addr = _clean_street((a.get("taxpayer_address") or "").strip())
+        mail_city = (a.get("taxpayer_city") or "").strip().title()
+        mail_state = (a.get("taxpayer_state") or "").strip().upper()
+        mail_zip = str(a.get("taxpayer_zip_code") or "").strip()
 
-        # Absentee (already filtered server-side to non-AL; also check same-state)
-        if mail_addr.upper() == prop_addr.upper() and mail_zip[:5] == prop_zip[:5]:
+        # Absentee: Detroit `address` field omits street type (e.g. "1099 MORRELL")
+        # while taxpayer_address includes it ("1099 MORRELL ST"). Compare number + name
+        # to avoid false "absentee" for owner-occupied properties.
+        p_tok = prop_addr.upper().split()
+        m_tok = mail_addr.upper().split()
+        same_addr = (
+            len(p_tok) >= 2 and len(m_tok) >= 2
+            and p_tok[0] == m_tok[0] and p_tok[1] == m_tok[1]
+        )
+        if same_addr and mail_zip[:5] == prop_zip[:5]:
             continue
 
-        # PrevParcelTotal = full appraised (market) value for AL
-        assessed = float(a.get("PrevParcelTotal") or 0)
-        improvement = float(a.get("PrevParcelImp") or 0)
+        assessed = float(a.get("amt_estimated_true_cash_value") or 0)
+        land_val = float(a.get("amt_land_value") or 0)
+        improvement = assessed - land_val
         if not (50000 <= assessed <= 300000) or improvement <= 0:
             continue
 
+        year_built = int(a.get("residential_year_built") or 0)
+        if year_built < 1800 or year_built >= 1990:
+            continue
+
+        # sale_date is ISO string "YYYY-MM-DD" or null; null → assume long-held
+        sale_date_raw = a.get("sale_date")
+        if sale_date_raw:
+            years_owned = _years_from_iso_date(sale_date_raw)
+            if years_owned < 10:
+                continue
+        else:
+            years_owned = 15  # no recorded sale → conservatively assume long-held
+
         leads.append(HouseLead(
-            apn=str(a.get("PARCELID") or "").strip(),
+            apn=str(a.get("parcel_id") or "").strip(),
             property_address=prop_addr,
             city=prop_city,
-            state="AL",
+            state="MI",
             zip_code=prop_zip,
             owner_name=name.title(),
             owner_mailing_address=mail_addr,
             owner_mailing_city=mail_city,
             owner_mailing_state=mail_state,
             owner_mailing_zip=mail_zip[:5],
-            year_built=0,        # not in any public Jefferson AL layer
+            year_built=year_built,
             assessed_value=assessed,
             improvement_value=improvement,
-            years_owned=0,       # not in any public Jefferson AL layer
+            years_owned=years_owned,
+            last_sale_date=str(sale_date_raw)[:10] if sale_date_raw else "",
+            last_sale_price=0.0,
+            property_class="SFR",
+        ))
+        if len(leads) >= limit:
+            break
+
+    return leads
+
+
+# ─── Fulton County GA (Atlanta) ──────────────────────────────────────────────
+# Tax_ParcelCurrentDigest_GCS_WGS_1984 MapServer/0 at gismaps.fultoncountyga.gov.
+# This is the only free public layer with both Atlanta city parcels AND TotAppr values.
+# ParcelID prefix '17 ' = Atlanta city proper (tax district 17).
+# TotAppr = appraised fair market value (100%); ImprAppr = improvement portion.
+# Layer has no ZipCode field; all district-17 parcels are Atlanta → use "30303" placeholder.
+# OwnerAddr2 = "CITY STATE ZIP" combined string — parse for mailing components.
+# Server has a cert chain issue on macOS Python; bypass with ssl.CERT_NONE (safe for public read).
+# year_built and sale_date not in this layer; set sentinel values.
+
+_FULTON_DIGEST_URL = (
+    "https://gismaps.fultoncountyga.gov/arcgispub2/rest/services"
+    "/Tax/Tax_ParcelCurrentDigest_GCS_WGS_1984/MapServer/0/query"
+)
+
+
+def _parse_owner_addr2(addr2: str):
+    """Parse Fulton County OwnerAddr2 'CITY STATE ZIP' into (city, state, zip)."""
+    parts = addr2.strip().split()
+    if len(parts) >= 3:
+        zip_part = parts[-1]
+        state_part = parts[-2]
+        city_part = " ".join(parts[:-2])
+    elif len(parts) == 2:
+        zip_part = parts[-1]
+        state_part = parts[0]
+        city_part = ""
+    else:
+        zip_part = ""
+        state_part = ""
+        city_part = ""
+    return city_part.title(), state_part.upper(), zip_part[:5]
+
+
+def load_fulton_ga(market, limit=15):
+    params = {
+        "where": (
+            "LUCode='101' "
+            "AND LivUnits >= 1 "
+            "AND TotAppr >= 50000 AND TotAppr <= 300000 "
+            "AND ImprAppr > 0 "
+            "AND ParcelID LIKE '17 %' "
+            "AND Owner IS NOT NULL "
+            "AND OwnerAddr1 <> Address"  # server-side absentee pre-filter
+        ),
+        "outFields": (
+            "ParcelID,Address,Owner,OwnerAddr1,OwnerAddr2,"
+            "TotAppr,LandAppr,ImprAppr,LivUnits"
+        ),
+        "returnGeometry": "false",
+        "resultRecordCount": min(limit * 6, 1000),
+        "f": "json",
+    }
+    try:
+        data = _get_json_no_ssl(_FULTON_DIGEST_URL, params)
+        features = data.get("features") or []
+    except Exception as exc:
+        print(f"  [FULTON_GA] live fetch failed ({exc}), using mock data")
+        return []
+
+    leads = []
+    for feat in features:
+        a = _attrs(feat)
+        name = (a.get("Owner") or "").strip()
+        if not name or _is_non_individual(name):
+            continue
+
+        prop_addr = _clean_street((a.get("Address") or "").strip())
+        prop_city = "Atlanta"
+        prop_zip = "30303"  # layer has no ZipCode; all district-17 parcels are in Atlanta
+        if not _valid_address(prop_addr, prop_city, prop_zip):
+            continue
+
+        # Mailing address: OwnerAddr1 = street, OwnerAddr2 = "CITY STATE ZIP"
+        mail_addr = _clean_street((a.get("OwnerAddr1") or "").strip())
+        addr2 = (a.get("OwnerAddr2") or "").strip()
+        mail_city, mail_state, mail_zip = _parse_owner_addr2(addr2) if addr2 else ("", "", "")
+
+        # Absentee: compare first two address tokens (number + street name) to catch
+        # minor suffix differences (e.g. "919 LINDBERG DR" vs "919 LINDBERGH DR")
+        p_tok = prop_addr.upper().split()
+        m_tok = mail_addr.upper().split()
+        same_addr = (
+            len(p_tok) >= 2 and len(m_tok) >= 2
+            and p_tok[0] == m_tok[0] and p_tok[1] == m_tok[1]
+        )
+        if same_addr:
+            continue
+
+        assessed = float(a.get("TotAppr") or 0)
+        improvement = float(a.get("ImprAppr") or 0)
+        if not (50000 <= assessed <= 300000) or improvement <= 0:
+            continue
+
+        leads.append(HouseLead(
+            apn=str(a.get("ParcelID") or "").strip(),
+            property_address=prop_addr,
+            city=prop_city,
+            state="GA",
+            zip_code=prop_zip,
+            owner_name=name.title(),
+            owner_mailing_address=mail_addr,
+            owner_mailing_city=mail_city,
+            owner_mailing_state=mail_state,
+            owner_mailing_zip=mail_zip,
+            year_built=0,       # not in Fulton GA public layer
+            assessed_value=assessed,
+            improvement_value=improvement,
+            years_owned=15,     # no sale date in layer; conservative estimate
             last_sale_date="",
             last_sale_price=0.0,
             property_class="SFR",
@@ -578,107 +667,104 @@ def load_jefferson_al(market, limit=15):
     return leads
 
 
-# ─── Duval County FL (Jacksonville) ──────────────────────────────────────────
-# Florida statewide FL_Parcels FeatureServer/0 — annual DOR property roll (Aug 2025).
-# DOR_UC='001' = Single Family Residential.
-# JV = just value (FL market value). LND_VAL = land value. JV > LND_VAL → structure exists.
-# SALE_YR1/SALE_MO1 = most recent recorded sale year/month.
-# ACT_YR_BLT = actual year built.
+# ─── Marion County IN (Indianapolis) ─────────────────────────────────────────
+# MapIndy/MapIndyProperty MapServer layer 10 — IndyGIS Parcels w/ Owner Info.
+# Updated nightly from IndyGIS Parcels and Marion County Assessor's Office.
+# PROPERTY_SUB_CLASS IN (510,511,512) = one-family dwelling (platted, unplatted, acreage).
+# ASSESSORYEAR_TOTALAV = Indiana True Tax Value = 100% of market value.
+# FULLOWNERNAME format: "LASTNAME, FIRSTNAME MI &, SECOND OWNER, ,"
+# OWNERZIP may carry +4 format; normalize to 5-digit.
+# year_built and sale_date not in this layer; set sentinel values.
 
-_DUVAL_URL = (
-    "https://services5.arcgis.com/GcvM6vDlR2gM4x31/arcgis/rest/services"
-    "/FL_Parcels/FeatureServer/0/query"
+_MARION_PARCELS_URL = (
+    "https://gis.indy.gov/server/rest/services/MapIndy/MapIndyProperty/MapServer/10/query"
 )
-_DUVAL_10YR = CURRENT_YEAR - 10  # SALE_YR1 <= this means 10+ yr hold
 
 
-def load_duval_fl(market, limit=15):
+def load_marion_in(market, limit=15):
     zip_list = ",".join(f"'{z}'" for z, _ in market.zips)
+
     params = {
         "where": (
-            "CountyName='Duval' AND DOR_UC='001' "
-            "AND ACT_YR_BLT > 0 AND ACT_YR_BLT < 1990 "
-            "AND JV >= 50000 AND JV <= 300000 "
-            "AND JV > LND_VAL "
-            f"AND (SALE_YR1 IS NULL OR SALE_YR1 <= {_DUVAL_10YR}) "
-            f"AND PHY_ZIPCD IN ({zip_list}) "
-            "AND OWN_NAME IS NOT NULL"
+            "PROPERTY_CLASS='RESIDENTIAL' "
+            "AND PROPERTY_SUB_CLASS IN (510,511,512) "
+            f"AND ZIPCODE IN ({zip_list}) "
+            "AND ASSESSORYEAR_TOTALAV >= 50000 "
+            "AND ASSESSORYEAR_TOTALAV <= 300000 "
+            "AND ASSESSORYEAR_IMPTOTAL > 0 "
+            "AND FULLOWNERNAME IS NOT NULL"
         ),
         "outFields": (
-            "PARCEL_ID,OWN_NAME,OWN_ADDR1,OWN_ADDR2,OWN_CITY,OWN_STATE,OWN_ZIPCD,"
-            "PHY_ADDR1,PHY_CITY,PHY_ZIPCD,ACT_YR_BLT,JV,LND_VAL,SALE_PRC1,SALE_YR1,SALE_MO1"
+            "STATEPARCELNUMBER,STNUMBER,PRE_DIR,STREET_NAME,SUFFIX,CITY,ZIPCODE,"
+            "FULLOWNERNAME,OWNERADDRESS,OWNERADDRESS2,OWNERCITY,OWNERSTATE,OWNERZIP,"
+            "ASSESSORYEAR_TOTALAV,ASSESSORYEAR_IMPTOTAL"
         ),
         "returnGeometry": "false",
-        "resultRecordCount": min(limit * 6, 2000),
+        "resultRecordCount": min(limit * 6, 1000),
         "f": "json",
     }
     try:
-        data = _get_json(_DUVAL_URL, params)
+        data = _get_json(_MARION_PARCELS_URL, params)
         features = data.get("features") or []
     except Exception as exc:
-        print(f"  [DUVAL_FL] live fetch failed ({exc}), using mock data")
+        print(f"  [MARION_IN] live fetch failed ({exc}), using mock data")
         return []
 
     leads = []
     for feat in features:
         a = _attrs(feat)
-        name = (a.get("OWN_NAME") or "").strip()
+        name = (a.get("FULLOWNERNAME") or "").strip()
         if not name or _is_non_individual(name):
             continue
 
-        prop_addr = _clean_street((a.get("PHY_ADDR1") or "").strip())
-        prop_city = (a.get("PHY_CITY") or "").strip().title()
-        prop_zip = str(a.get("PHY_ZIPCD") or "").strip()[:5]
+        # Build property address from split fields
+        num = str(a.get("STNUMBER") or "").strip().split(".")[0]  # float "2125.0" → "2125"
+        pre = (a.get("PRE_DIR") or "").strip()
+        sname = (a.get("STREET_NAME") or "").strip()
+        sfx = (a.get("SUFFIX") or "").strip()
+        raw_addr = " ".join(p for p in [num, pre, sname, sfx] if p)
+        prop_addr = _clean_street(raw_addr)
+        prop_city = (a.get("CITY") or "").strip().title()
+        prop_zip = str(a.get("ZIPCODE") or "").strip()[:5]
         if not _valid_address(prop_addr, prop_city, prop_zip):
             continue
 
-        # Mailing address (OWN_ADDR2 is continuation/unit; OWN_ADDR1 is street)
-        mail_addr = _clean_street((a.get("OWN_ADDR1") or "").strip())
-        addr2 = (a.get("OWN_ADDR2") or "").strip()
-        if addr2:
-            mail_addr = f"{mail_addr} {addr2.title()}".strip()
-        mail_city = (a.get("OWN_CITY") or "").strip().title()
-        mail_state = (a.get("OWN_STATE") or "").strip().upper()
-        mail_zip = str(a.get("OWN_ZIPCD") or "").strip()[:5]
+        # Mailing address
+        mail_addr_parts = [
+            _clean_street((a.get("OWNERADDRESS") or "").strip()),
+            (a.get("OWNERADDRESS2") or "").strip().title(),
+        ]
+        mail_addr = " ".join(p for p in mail_addr_parts if p)
+        mail_city = (a.get("OWNERCITY") or "").strip().title()
+        mail_state = (a.get("OWNERSTATE") or "").strip().upper()
+        mail_zip = str(a.get("OWNERZIP") or "").strip()
 
-        # Absentee: out-of-state OR different zip from property
-        if mail_state == "FL" and mail_zip == prop_zip:
-            continue  # same state + same zip = likely owner-occupied
-
-        year_built = int(a.get("ACT_YR_BLT") or 0)
-        if year_built < 1800 or year_built >= 1990:
+        # Absentee: compare 5-digit base zip (OWNERZIP may be +4)
+        if mail_addr.upper().strip() == prop_addr.upper().strip() and mail_zip[:5] == prop_zip[:5]:
             continue
 
-        jv = float(a.get("JV") or 0)
-        lnd = float(a.get("LND_VAL") or 0)
-        improvement = jv - lnd
-        if not (50000 <= jv <= 300000) or improvement <= 0:
-            continue
-
-        sale_yr = int(a.get("SALE_YR1") or 0)
-        _mo_raw = str(a.get("SALE_MO1") or "").strip()
-        sale_mo = int(_mo_raw) if _mo_raw.isdigit() else 1
-        years_owned = CURRENT_YEAR - sale_yr if sale_yr > 1900 else 20
-        if years_owned < 10:
+        assessed = float(a.get("ASSESSORYEAR_TOTALAV") or 0)
+        improvement = float(a.get("ASSESSORYEAR_IMPTOTAL") or 0)
+        if not (50000 <= assessed <= 300000) or improvement <= 0:
             continue
 
         leads.append(HouseLead(
-            apn=str(a.get("PARCEL_ID") or "").strip(),
+            apn=str(a.get("STATEPARCELNUMBER") or "").strip(),
             property_address=prop_addr,
             city=prop_city,
-            state="FL",
+            state="IN",
             zip_code=prop_zip,
             owner_name=name.title(),
             owner_mailing_address=mail_addr,
             owner_mailing_city=mail_city,
             owner_mailing_state=mail_state,
-            owner_mailing_zip=mail_zip,
-            year_built=year_built,
-            assessed_value=jv,
+            owner_mailing_zip=mail_zip[:5],
+            year_built=0,       # not in IndyGIS property layer
+            assessed_value=assessed,
             improvement_value=improvement,
-            years_owned=years_owned,
-            last_sale_date=f"{sale_yr}-{sale_mo:02d}" if sale_yr else "",
-            last_sale_price=float(a.get("SALE_PRC1") or 0),
+            years_owned=15,     # no sale date in layer; conservative estimate
+            last_sale_date="",
+            last_sale_price=0.0,
             property_class="SFR",
         ))
         if len(leads) >= limit:
@@ -690,9 +776,9 @@ def load_duval_fl(market, limit=15):
 # ─── Registry ─────────────────────────────────────────────────────────────────
 
 LIVE_HOUSE_LOADERS = {
-    "CUYAHOGA_OH": load_cuyahoga_oh,
-    "SHELBY_TN": load_shelby_tn,
-    "HARRIS_TX": load_harris_tx,
-    "JEFFERSON_AL": load_jefferson_al,
-    "DUVAL_FL": load_duval_fl,
+    "SHELBY_TN":  load_shelby_tn,
+    "HARRIS_TX":  load_harris_tx,
+    "WAYNE_MI":   load_wayne_mi,
+    "FULTON_GA":  load_fulton_ga,
+    "MARION_IN":  load_marion_in,
 }

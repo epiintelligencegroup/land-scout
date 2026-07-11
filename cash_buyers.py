@@ -9,11 +9,11 @@ codes in the last 24 months. Two metrics per buyer:
 Buyers with two_year_purchases >= 3 are flagged as active flippers who close fast.
 
 Live sources (confirmed endpoints):
-  Cuyahoga OH  : APPRAISAL_PARCELS_CAMA_WGS84 layer (grantee + transfer date)
-  Shelby TN    : Data Midsouth Socrata API (warranty deeds 2016-2023)
-  Harris TX    : HCAD Parcels layer (recent owner_name + new_owner_date)
-  Duval FL     : FL_Parcels FeatureServer (OWN_NAME + SALE_YR1/SALE_MO1)
-  Jefferson AL : No free deed transfer API — mock data only
+  Shelby TN : Data Midsouth Socrata API (warranty deeds 2016-2023)
+  Harris TX : HCAD Parcels layer (recent owner_name + new_owner_date)
+  Wayne MI  : Detroit assessor_property_sales_view (grantee + sale_date)
+  Fulton GA : No free deed transfer API — mock data only
+  Marion IN : No free deed transfer API — mock data only
 """
 import datetime
 import json
@@ -124,34 +124,37 @@ def _build_buyers(records, top_n=20):
     return buyers[:top_n]
 
 
-# ─── Cuyahoga County OH ───────────────────────────────────────────────────────
-# CAMA layer has grantee (buyer), last_transfer_date (Unix ms), par_addr_all, mail_zip.
-# We look at transfers in the last 24 months and count per grantee.
+# ─── Wayne County MI (Detroit Assessment Roll property sales) ─────────────────
+# assessor_property_sales_view at Detroit's ArcGIS org — deed transfers with
+# grantee (buyer), sale_date (ISO string), property_class_code, zip_code.
+# Filter to residential (property_class_code starts with '4') last 24 months.
 
-_CUYAHOGA_CAMA_URL = (
-    "https://gis.cuyahogacounty.us/server/rest/services/CCFO"
-    "/APPRAISAL_PARCELS_CAMA_WGS84/MapServer/0/query"
+_WAYNE_SALES_URL = (
+    "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services"
+    "/assessor_property_sales_view/FeatureServer/0/query"
 )
 
 
-def _load_cash_buyers_cuyahoga(market):
-    date_24mo = _ago_date(730)
+def _load_cash_buyers_wayne(market):
+    cutoff_date = (datetime.date.today() - datetime.timedelta(days=730)).isoformat()
+    zip_list = ",".join(f"'{z}'" for z, _ in market.zips)
     params = {
         "where": (
-            f"last_transfer_date > {date_24mo} "
-            "AND last_sales_amount > 25000 "
-            "AND property_class='R'"
+            f"sale_date >= date '{cutoff_date}' "
+            f"AND zip_code IN ({zip_list}) "
+            "AND amt_sale_price > 25000 "
+            "AND property_class_code LIKE '4%'"  # residential class codes start with 4
         ),
-        "outFields": "grantee,mail_addr_street,mail_zip,par_addr_all,last_transfer_date",
+        "outFields": "grantee,address,zip_code,sale_date,amt_sale_price",
         "returnGeometry": "false",
         "resultRecordCount": 2000,
         "f": "json",
     }
     try:
-        data = _get_json(_CUYAHOGA_CAMA_URL, params)
+        data = _get_json(_WAYNE_SALES_URL, params)
         features = data.get("features") or []
     except Exception as exc:
-        print(f"  [CUYAHOGA cash buyers] fetch failed ({exc}), using mock")
+        print(f"  [WAYNE_MI cash buyers] fetch failed ({exc}), using mock")
         return None
 
     records = []
@@ -160,10 +163,9 @@ def _load_cash_buyers_cuyahoga(market):
         name = (a.get("grantee") or "").strip()
         if not name:
             continue
-        transfer_ms = a.get("last_transfer_date") or 0
-        date_iso = datetime.datetime.utcfromtimestamp(transfer_ms / 1000).date().isoformat()
-        addr = (a.get("mail_addr_street") or "").strip().title()
-        zip_code = str(a.get("mail_zip") or "").strip()
+        date_iso = str(a.get("sale_date") or "")[:10]
+        addr = (a.get("address") or "").strip().title()
+        zip_code = str(a.get("zip_code") or "").strip()[:5]
         records.append((name, addr, zip_code, date_iso))
 
     return _build_buyers(records)
@@ -251,55 +253,6 @@ def _load_cash_buyers_harris(market):
     return _build_buyers(records)
 
 
-# ─── Duval County FL (FL_Parcels recent sales) ───────────────────────────────
-# SALE_YR1/SALE_MO1 = most recent recorded sale year/month. Current owner = buyer.
-# Look at SALE_YR1 >= CURRENT_YEAR - 2 for "recent" transfers in target zips.
-
-_DUVAL_PARCELS_URL = (
-    "https://services5.arcgis.com/GcvM6vDlR2gM4x31/arcgis/rest/services"
-    "/FL_Parcels/FeatureServer/0/query"
-)
-_DUVAL_RECENT_YR = CURRENT_YEAR - 2
-
-
-def _load_cash_buyers_duval(market):
-    zip_list = ",".join(f"'{z}'" for z, _ in market.zips)
-    params = {
-        "where": (
-            f"CountyName='Duval' AND DOR_UC='001' "
-            f"AND SALE_YR1 >= {_DUVAL_RECENT_YR} "
-            f"AND PHY_ZIPCD IN ({zip_list}) "
-            "AND SALE_PRC1 > 25000 "
-            "AND OWN_NAME IS NOT NULL"
-        ),
-        "outFields": "OWN_NAME,OWN_ADDR1,OWN_ZIPCD,PHY_ZIPCD,SALE_YR1,SALE_MO1",
-        "returnGeometry": "false",
-        "resultRecordCount": 2000,
-        "f": "json",
-    }
-    try:
-        data = _get_json(_DUVAL_PARCELS_URL, params)
-        features = data.get("features") or []
-    except Exception as exc:
-        print(f"  [DUVAL cash buyers] fetch failed ({exc}), using mock")
-        return None
-
-    records = []
-    for feat in features:
-        a = _attrs(feat)
-        name = (a.get("OWN_NAME") or "").strip()
-        if not name:
-            continue
-        yr = int(a.get("SALE_YR1") or 0)
-        mo = int(a.get("SALE_MO1") or 1)
-        date_iso = f"{yr}-{mo:02d}-01" if yr else ""
-        addr = (a.get("OWN_ADDR1") or "").strip().title()
-        zip_code = str(a.get("OWN_ZIPCD") or a.get("PHY_ZIPCD") or "").strip()
-        records.append((name, addr, zip_code, date_iso))
-
-    return _build_buyers(records)
-
-
 # ─── Mock generator ───────────────────────────────────────────────────────────
 
 _BUYER_FIRST = [
@@ -349,18 +302,18 @@ def generate_mock_cash_buyers(market, count=8):
 # ─── Public entry point ───────────────────────────────────────────────────────
 
 _LIVE_BUYER_LOADERS = {
-    "CUYAHOGA_OH": _load_cash_buyers_cuyahoga,
-    "SHELBY_TN":   _load_cash_buyers_shelby,
-    "HARRIS_TX":   _load_cash_buyers_harris,
-    "DUVAL_FL":    _load_cash_buyers_duval,
-    # JEFFERSON_AL: no free deed transfer API → always mock
+    "SHELBY_TN": _load_cash_buyers_shelby,
+    "HARRIS_TX": _load_cash_buyers_harris,
+    "WAYNE_MI":  _load_cash_buyers_wayne,
+    # FULTON_GA: no free deed transfer API → always mock
+    # MARION_IN: no free deed transfer API → always mock
 }
 
 
 def load_cash_buyers(market):
     """
     Load cash buyers for a market. Falls back to mock if the live fetch fails or
-    returns no results. Jefferson AL always uses mock (no free deed records API).
+    returns no results. Fulton GA and Marion IN always use mock (no free deed API).
     """
     loader = _LIVE_BUYER_LOADERS.get(market.key)
     if loader:
