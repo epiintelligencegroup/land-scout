@@ -1,9 +1,9 @@
 name: House Wholesale Daily Digest
 
 on:
-  # schedule:
-  #   # 8:00 AM ET daily (12:00 UTC)
-  #   - cron: "0 12 * * *"
+  schedule:
+    # 8:00 AM ET daily (12:00 UTC)
+    - cron: "0 12 * * *"
   workflow_dispatch:
     inputs:
       mock_lead_count:

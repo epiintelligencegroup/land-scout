@@ -53,7 +53,9 @@ def run_market(market, sent_keys):
 
     fresh_leads = [lead for lead in leads if lead_key(market, lead) not in sent_keys]
     already_sent = len(leads) - len(fresh_leads)
-    print(f"[{label}] {len(fresh_leads)} fresh lead(s), {already_sent} already sent before")
+    # Only send leads with motivation score 8 or higher
+    fresh_leads = [lead for lead in fresh_leads if lead.motivation_score >= 8]
+    print(f"[{label}] {len(fresh_leads)} fresh lead(s) with score 8+, {already_sent} already sent before")
 
     deals = []
     for lead in fresh_leads:

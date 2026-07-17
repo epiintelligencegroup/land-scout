@@ -8,12 +8,24 @@ codes in the last 24 months. Two metrics per buyer:
 
 Buyers with two_year_purchases >= 3 are flagged as active flippers who close fast.
 
-Live sources (confirmed endpoints):
-  Shelby TN : Data Midsouth Socrata API (warranty deeds 2016-2023)
-  Harris TX : HCAD Parcels layer (recent owner_name + new_owner_date)
-  Wayne MI  : Detroit assessor_property_sales_view (grantee + sale_date)
-  Fulton GA : No free deed transfer API — mock data only
-  Marion IN : No free deed transfer API — mock data only
+Live sources (confirmed endpoints, researched 2026-07-17):
+  Baltimore MD   : Realproperty_OB FeatureServer/0 (same layer as parcels) —
+                   SALEDATE is a string 'MMDDYYYY' field, no date-typed query
+                   possible, so results are over-fetched by year then filtered
+                   precisely to a 730-day window in Python.
+  St. Louis MO   : Assessor_Public_Parcels MapServer/11 (same layer as parcels) —
+                   ResSaleDate is a true Esri date field, queried directly.
+  Philadelphia PA: opa_properties_public via Carto SQL API — sale_date is ISO,
+                   queried directly.
+  Cincinnati OH  : AuditorParcelInformation MapServer/15 (same layer as parcels) —
+                   SALDAT is an Excel serial date (days since 1899-12-30),
+                   queried directly with a serial cutoff. Layer has no site zip
+                   field, so this query is county-wide (not restricted to
+                   market zips) — same gap as the property-address workaround
+                   used in gis_house_sources.py for this county.
+  Kansas City MO : No free deed transfer API found for Jackson County (checked
+                   Auditor/ParcelViewer ArcGIS folders — no sale date/price
+                   field, no open recorder-of-deeds API) — mock data only.
 """
 import datetime
 import json
@@ -25,6 +37,7 @@ from collections import defaultdict
 
 CURRENT_YEAR = datetime.date.today().year
 _TIMEOUT = 25
+_EXCEL_EPOCH = datetime.date(1899, 12, 30)
 
 # Keywords in a buyer's name that signal a non-real-estate business — exclude these.
 _NON_RE_BUSINESS_RE = re.compile(
@@ -63,14 +76,6 @@ def _get_json(url, params=None):
     req = urllib.request.Request(full_url, headers={"User-Agent": "HouseWholesalePipeline/1.0"})
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
         return json.loads(resp.read().decode())
-
-
-def _date_lit(d: datetime.date) -> str:
-    return f"date '{d.isoformat()}'"
-
-
-def _ago_date(days: int) -> str:
-    return _date_lit(datetime.date.today() - datetime.timedelta(days=days))
 
 
 def _attrs(feat):
@@ -124,131 +129,207 @@ def _build_buyers(records, top_n=20):
     return buyers[:top_n]
 
 
-# ─── Wayne County MI (Detroit Assessment Roll property sales) ─────────────────
-# assessor_property_sales_view at Detroit's ArcGIS org — deed transfers with
-# grantee (buyer), sale_date (ISO string), property_class_code, zip_code.
-# Filter to residential (property_class_code starts with '4') last 24 months.
+# ─── Baltimore City, MD ───────────────────────────────────────────────────────
+# Realproperty_OB FeatureServer/0 — same layer used for parcels in
+# gis_house_sources.py. SALEDATE is a string 'MMDDYYYY' field with no date-typed
+# query support, so we over-fetch by matching the trailing year (covers a bit
+# more than 24 months) then filter precisely to a 730-day window in Python.
 
-_WAYNE_SALES_URL = (
-    "https://services2.arcgis.com/qvkbeam7Wirps6zC/arcgis/rest/services"
-    "/assessor_property_sales_view/FeatureServer/0/query"
+_BALT_PARCEL_URL = (
+    "https://geodata.baltimorecity.gov/egis/rest/services"
+    "/CityView/Realproperty_OB/FeatureServer/0/query"
 )
 
 
-def _load_cash_buyers_wayne(market):
-    cutoff_date = (datetime.date.today() - datetime.timedelta(days=730)).isoformat()
+def _balt_parse_saledate(raw: str):
+    """Parse Baltimore SALEDATE 'MMDDYYYY' -> date, or None if unparseable."""
+    if not raw or len(raw) < 8:
+        return None
+    try:
+        mm, dd, yyyy = int(raw[0:2]), int(raw[2:4]), int(raw[4:8])
+        return datetime.date(yyyy, mm, dd)
+    except (ValueError, TypeError):
+        return None
+
+
+def _load_cash_buyers_baltimore(market):
+    cutoff = datetime.date.today() - datetime.timedelta(days=730)
+    year_filter = " OR ".join(
+        f"SALEDATE LIKE '%{y}'" for y in {cutoff.year, cutoff.year + 1, CURRENT_YEAR + 1}
+    )
     zip_list = ",".join(f"'{z}'" for z, _ in market.zips)
     params = {
         "where": (
-            f"sale_date >= date '{cutoff_date}' "
-            f"AND zip_code IN ({zip_list}) "
-            "AND amt_sale_price > 25000 "
-            "AND property_class_code LIKE '4%'"  # residential class codes start with 4
+            f"USEGROUP='R' AND SALEPRIC > 25000 AND ({year_filter}) "
+            f"AND ZIP_CODE IN ({zip_list})"
         ),
-        "outFields": "grantee,address,zip_code,sale_date,amt_sale_price",
+        "outFields": "OWNER_1,MAILTOADD,FULLADDR,ZIP_CODE,SALEDATE,SALEPRIC",
         "returnGeometry": "false",
         "resultRecordCount": 2000,
         "f": "json",
     }
     try:
-        data = _get_json(_WAYNE_SALES_URL, params)
+        data = _get_json(_BALT_PARCEL_URL, params)
         features = data.get("features") or []
     except Exception as exc:
-        print(f"  [WAYNE_MI cash buyers] fetch failed ({exc}), using mock")
+        print(f"  [BALTIMORE_MD cash buyers] fetch failed ({exc}), using mock")
         return None
 
     records = []
     for feat in features:
         a = _attrs(feat)
-        name = (a.get("grantee") or "").strip()
+        name = (a.get("OWNER_1") or "").strip()
         if not name:
             continue
-        date_iso = str(a.get("sale_date") or "")[:10]
-        addr = (a.get("address") or "").strip().title()
-        zip_code = str(a.get("zip_code") or "").strip()[:5]
-        records.append((name, addr, zip_code, date_iso))
+        sale_date = _balt_parse_saledate(str(a.get("SALEDATE") or "").strip())
+        if not sale_date or sale_date < cutoff:
+            continue
+        addr = (a.get("MAILTOADD") or "").strip().title()
+        zip_code = str(a.get("ZIP_CODE") or "").strip()[:5]
+        records.append((name, addr, zip_code, sale_date.isoformat()))
 
     return _build_buyers(records)
 
 
-# ─── Shelby County TN (Data Midsouth Socrata) ────────────────────────────────
-# Warranty deed transactions 2016–2023. group by property_grantee1.
-# Dataset is annual; most recent data = 2023 so "recent" = 2022-2023.
-# record_date format: "YYYY-MM-DDTHH:MM:SS+00:00"
+# ─── St. Louis City, MO ──────────────────────────────────────────────────────
+# Assessor_Public_Parcels MapServer/11 — same layer used for parcels.
+# ResSaleDate is a true Esri date field; query directly with a date literal.
 
-_DATASOUTH_URL = (
-    "https://www.datamidsouth.org/api/explore/v2.1/catalog/datasets"
-    "/shelby-county-register-of-deeds-property-transactions/records"
+_STLOUIS_PARCEL_URL = (
+    "https://maps8.stlouis-mo.gov/arcgis/rest/services"
+    "/ASSESSOR/Assessor_Public_Parcels/MapServer/11/query"
 )
 
 
-def _load_cash_buyers_shelby(market):
-    zip_list = " OR ".join(f'zipcode="{z}"' for z, _ in market.zips)
-    params = {
-        "select": "property_grantee1,property_address,record_date,val_consideration,zipcode",
-        "where": f"transaction_type_desc='WARRANTY DEED' AND ({zip_list})",
-        "order_by": "record_date DESC",
-        "limit": 100,
-    }
-    try:
-        data = _get_json(_DATASOUTH_URL, params)
-        results = data.get("results") or []
-    except Exception as exc:
-        print(f"  [SHELBY cash buyers] fetch failed ({exc}), using mock")
-        return None
-
-    records = []
-    for row in results:
-        name = (row.get("property_grantee1") or "").strip()
-        if not name:
-            continue
-        record_date = (row.get("record_date") or "")[:10]
-        zip_code = str(row.get("zipcode") or "").strip()
-        addr = (row.get("property_address") or "").strip().title()
-        records.append((name, addr, zip_code, record_date))
-
-    return _build_buyers(records)
-
-
-# ─── Harris County TX (HCAD recent transfers) ────────────────────────────────
-# Use HCAD Parcels to find who recently took ownership in target zips.
-# new_owner_date is in Unix ms. Filter to last 24 months, group by owner_name_1.
-
-_HARRIS_PARCELS_URL = "https://www.gis.hctx.net/arcgis/rest/services/HCAD/Parcels/MapServer/0/query"
-
-
-def _load_cash_buyers_harris(market):
-    date_24mo = _ago_date(730)
-    zip_list = ",".join(f"'{z}'" for z, _ in market.zips)
+def _load_cash_buyers_stlouis(market):
+    cutoff = datetime.date.today() - datetime.timedelta(days=730)
+    zip_ints = ",".join(str(z) for z, _ in market.zips)
     params = {
         "where": (
-            f"land_use=1001 AND site_zip IN ({zip_list}) "
-            f"AND new_owner_date > {date_24mo} "
-            "AND total_appraised_val > 25000"
+            f"PropertyClassCode = 15 AND ResSaleDate >= date '{cutoff.isoformat()}' "
+            f"AND ResSalePrice > 25000 AND ZIP IN ({zip_ints})"
         ),
-        "outFields": "owner_name_1,mail_addr_1,mail_zip,site_zip,new_owner_date",
+        "outFields": "OwnerName,OwnerAddr,OwnerCity,OwnerState,OwnerZIP,ZIP,ResSaleDate,ResSalePrice",
         "returnGeometry": "false",
         "resultRecordCount": 2000,
         "f": "json",
     }
     try:
-        data = _get_json(_HARRIS_PARCELS_URL, params)
+        data = _get_json(_STLOUIS_PARCEL_URL, params)
         features = data.get("features") or []
     except Exception as exc:
-        print(f"  [HARRIS cash buyers] fetch failed ({exc}), using mock")
+        print(f"  [STLOUIS_MO cash buyers] fetch failed ({exc}), using mock")
         return None
 
     records = []
     for feat in features:
         a = _attrs(feat)
-        name = (a.get("owner_name_1") or "").strip()
+        name = (a.get("OwnerName") or "").strip()
         if not name:
             continue
-        transfer_ms = a.get("new_owner_date") or 0
-        date_iso = datetime.datetime.utcfromtimestamp(transfer_ms / 1000).date().isoformat()
-        addr = (a.get("mail_addr_1") or "").strip().title()
-        zip_code = str(a.get("mail_zip") or a.get("site_zip") or "").strip()
-        records.append((name, addr, zip_code, date_iso))
+        sale_ms = a.get("ResSaleDate")
+        if not sale_ms:
+            continue
+        sale_date = datetime.datetime.utcfromtimestamp(int(sale_ms) / 1000).date()
+        addr = (a.get("OwnerAddr") or "").strip().title()
+        zip_code = str(a.get("OwnerZIP") or a.get("ZIP") or "").split(".")[0].strip()[:5]
+        records.append((name, addr, zip_code, sale_date.isoformat()))
+
+    return _build_buyers(records)
+
+
+# ─── Philadelphia, PA (Philadelphia County) ───────────────────────────────────
+# opa_properties_public via Carto SQL API — sale_date is ISO, query directly.
+
+_PHILLY_CARTO_URL = "https://phl.carto.com/api/v2/sql"
+
+
+def _load_cash_buyers_philadelphia(market):
+    cutoff = datetime.date.today() - datetime.timedelta(days=730)
+    zip_list = "', '".join(z for z, _ in market.zips)
+    sql = (
+        "SELECT owner_1, mailing_street, mailing_zip, sale_date, sale_price "
+        "FROM opa_properties_public "
+        "WHERE category_code = '1' "
+        f"AND zip_code IN ('{zip_list}') "
+        f"AND sale_date >= '{cutoff.isoformat()}' "
+        "AND sale_price > 25000 "
+        "AND owner_1 IS NOT NULL "
+        "LIMIT 2000"
+    )
+    params = {"q": sql, "format": "json"}
+    try:
+        data = _get_json(_PHILLY_CARTO_URL, params)
+        rows = data.get("rows") or []
+        if data.get("error"):
+            raise ValueError(data["error"])
+    except Exception as exc:
+        print(f"  [PHILADELPHIA_PA cash buyers] fetch failed ({exc}), using mock")
+        return None
+
+    records = []
+    for row in rows:
+        name = (row.get("owner_1") or "").strip()
+        if not name:
+            continue
+        sale_date_raw = (row.get("sale_date") or "")[:10]
+        if not sale_date_raw:
+            continue
+        addr = (row.get("mailing_street") or "").strip().title()
+        zip_code = str(row.get("mailing_zip") or "").strip()[:5]
+        records.append((name, addr, zip_code, sale_date_raw))
+
+    return _build_buyers(records)
+
+
+# ─── Cincinnati, OH (Hamilton County) ────────────────────────────────────────
+# AuditorParcelInformation MapServer/15 — same layer used for parcels.
+# SALDAT is an Excel serial date (days since 1899-12-30); query directly with a
+# serial cutoff. Layer has no site zip field, so this is county-wide rather
+# than restricted to market zips (same gap accepted in gis_house_sources.py).
+
+_CIN_PARCEL_URL = (
+    "https://cagisonline.hamilton-co.org/arcgis/rest/services"
+    "/COUNTYWIDE/AuditorParcelInformation/MapServer/15/query"
+)
+
+
+def _load_cash_buyers_cincinnati(market):
+    cutoff = datetime.date.today() - datetime.timedelta(days=730)
+    cutoff_serial = (cutoff - _EXCEL_EPOCH).days
+    params = {
+        "where": (
+            f"LUCLASS >= 510 AND LUCLASS <= 519 "
+            f"AND SALDAT >= {cutoff_serial} AND SALAMT > 25000"
+        ),
+        "outFields": "OWNNM1,OWNNM2,OWNAD1,OWNAD2,SALAMT,SALDAT",
+        "returnGeometry": "false",
+        "resultRecordCount": 2000,
+        "f": "json",
+    }
+    try:
+        data = _get_json(_CIN_PARCEL_URL, params)
+        features = data.get("features") or []
+    except Exception as exc:
+        print(f"  [CINCINNATI_OH cash buyers] fetch failed ({exc}), using mock")
+        return None
+
+    records = []
+    for feat in features:
+        a = _attrs(feat)
+        name = (a.get("OWNNM1") or "").strip()
+        suffix = (a.get("OWNNM2") or "").strip()
+        full_name = f"{name} {suffix}".strip() if suffix else name
+        if not full_name:
+            continue
+        serial = a.get("SALDAT")
+        if not serial:
+            continue
+        sale_date = _EXCEL_EPOCH + datetime.timedelta(days=int(serial))
+        addr = (a.get("OWNAD1") or "").strip().title()
+        ownad2 = (a.get("OWNAD2") or "").strip().upper().split()
+        zip_code = ownad2[-1][:5] if ownad2 and re.fullmatch(r"\d{5}(?:-\d{4})?", ownad2[-1]) else ""
+        records.append((full_name, addr, zip_code, sale_date.isoformat()))
 
     return _build_buyers(records)
 
@@ -302,18 +383,18 @@ def generate_mock_cash_buyers(market, count=8):
 # ─── Public entry point ───────────────────────────────────────────────────────
 
 _LIVE_BUYER_LOADERS = {
-    "SHELBY_TN": _load_cash_buyers_shelby,
-    "HARRIS_TX": _load_cash_buyers_harris,
-    "WAYNE_MI":  _load_cash_buyers_wayne,
-    # FULTON_GA: no free deed transfer API → always mock
-    # MARION_IN: no free deed transfer API → always mock
+    "BALTIMORE_MD":    _load_cash_buyers_baltimore,
+    "STLOUIS_MO":      _load_cash_buyers_stlouis,
+    "PHILADELPHIA_PA": _load_cash_buyers_philadelphia,
+    "CINCINNATI_OH":   _load_cash_buyers_cincinnati,
+    # KANSASCITY_MO: no free deed transfer API found for Jackson County → mock
 }
 
 
 def load_cash_buyers(market):
     """
     Load cash buyers for a market. Falls back to mock if the live fetch fails or
-    returns no results. Fulton GA and Marion IN always use mock (no free deed API).
+    returns no results. Kansas City MO always uses mock (no free deed API).
     """
     loader = _LIVE_BUYER_LOADERS.get(market.key)
     if loader:

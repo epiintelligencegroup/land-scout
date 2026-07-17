@@ -140,10 +140,10 @@ def _passes_filters(row):
     except (ValueError, TypeError):
         return False
 
-    # Assessed value $50k-$300k
+    # Assessed value $100k-$300k
     try:
         assessed = float(row.get("assessed_value") or 0)
-        if not (50000 <= assessed <= 300000):
+        if not (100000 <= assessed <= 300000):
             return False
     except (ValueError, TypeError):
         return False
@@ -156,10 +156,10 @@ def _passes_filters(row):
     except (ValueError, TypeError):
         return False
 
-    # Owner held 10+ years
+    # Owner held 20+ years
     try:
         years = int(row.get("years_owned") or 0)
-        if years < 10:
+        if years < 20:
             return False
     except (ValueError, TypeError):
         return False
@@ -241,9 +241,12 @@ _NEIGHBOR_STATES = {
     "TX": ["LA", "AR", "OK", "NM", "CO"],
     "AL": ["GA", "TN", "MS", "FL"],
     "FL": ["GA", "AL", "NY", "NJ"],
+    "MD": ["PA", "VA", "WV", "DE", "DC"],
+    "MO": ["IL", "KY", "TN", "AR", "OK", "KS", "NE", "IA"],
+    "PA": ["NY", "NJ", "DE", "MD", "WV", "OH"],
 }
 _CITIES_BY_STATE = {
-    "PA": ["Pittsburgh", "Philadelphia"], "WV": ["Charleston", "Huntington"],
+    "PA": ["Pittsburgh", "Allentown"], "WV": ["Charleston", "Huntington"],
     "KY": ["Louisville", "Lexington"], "IN": ["Indianapolis", "Fort Wayne"],
     "MI": ["Detroit", "Grand Rapids"], "GA": ["Atlanta", "Savannah"],
     "AL": ["Birmingham", "Montgomery"], "MS": ["Jackson", "Gulfport"],
@@ -251,10 +254,13 @@ _CITIES_BY_STATE = {
     "NC": ["Charlotte", "Raleigh"], "VA": ["Richmond", "Virginia Beach"],
     "LA": ["New Orleans", "Baton Rouge"], "OK": ["Oklahoma City", "Tulsa"],
     "NM": ["Albuquerque", "Santa Fe"], "CO": ["Denver", "Colorado Springs"],
-    "FL": ["Miami", "Orlando", "Tampa"], "OH": ["Columbus", "Cincinnati"],
+    "FL": ["Miami", "Orlando", "Tampa"], "OH": ["Columbus", "Dayton"],
     "TN": ["Nashville", "Knoxville"], "TX": ["Dallas", "Austin"],
     "NY": ["New York", "Buffalo"], "NJ": ["Newark", "Jersey City"],
     "CA": ["Los Angeles", "San Diego"], "IL": ["Chicago", "Rockford"],
+    "DC": ["Washington"], "DE": ["Wilmington", "Dover"],
+    "WV": ["Charleston", "Morgantown"], "KS": ["Wichita", "Overland Park"],
+    "IA": ["Des Moines", "Cedar Rapids"], "NE": ["Omaha", "Lincoln"],
 }
 
 
@@ -267,9 +273,9 @@ def generate_mock_house_leads(market, count=10):
         street = f"{street_num} {rng.choice(_STREET_NAMES)} {rng.choice(_STREET_TYPES)}"
         owner_name = f"{rng.choice(_FIRST_NAMES)} {rng.choice(_LAST_NAMES)}"
         year_built = rng.randint(1945, 1989)
-        assessed = rng.randint(55, 280) * 1000
+        assessed = rng.randint(100, 290) * 1000
         improvement = round(assessed * rng.uniform(0.6, 0.85), -2)
-        years_owned = rng.randint(10, 42)
+        years_owned = rng.randint(20, 45)
         last_sale_year = max(1980, CURRENT_YEAR - years_owned)
         last_sale_price = round(assessed * rng.uniform(0.25, 0.65), -2)
 
